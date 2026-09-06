@@ -1,0 +1,24 @@
+server {
+    listen ${PORT};
+    server_name _;
+    root /usr/share/nginx/html;
+
+    # the router owns every path, so anything not a real file falls through to index
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # the built assets are content-hashed by Vite, so they can be cached hard
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # index.html must never be cached, or a deploy does not reach anyone
+    location = /index.html {
+        add_header Cache-Control "no-store";
+    }
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+}

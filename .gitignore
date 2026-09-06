@@ -1,0 +1,16 @@
+node_modules/
+dist/
+target/
+.env
+
+# Windows and IDE noise
+Thumbs.db
+Desktop.ini
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+
+# uploaded files live outside version control
+data/

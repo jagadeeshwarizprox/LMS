@@ -1,0 +1,53 @@
+# One command to get everything running:  docker compose up
+#
+# Mongo, the API and the built frontend. The API waits for Mongo to answer a ping
+# before it starts, so a first run on a cold machine does not fail on a race.
+services:
+  mongo:
+    image: mongo:7
+    container_name: pib-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - pib-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: ./backend
+    container_name: pib-api
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/pib_lms
+      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-real-secret-at-least-32-chars}
+      # without these, a fresh database has no users and nobody can sign in
+      BOOTSTRAP_EMAIL: ${BOOTSTRAP_EMAIL:-admin@proitbridge.com}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-change-me-on-first-sign-in}
+      BOOTSTRAP_NAME: ${BOOTSTRAP_NAME:-Super admin}
+      MAIL_ENABLED: "false"
+      CORS_ORIGINS: http://localhost:8081
+      FILES_DIR: /data/files
+      AI_ENABLED: "false"      # set true and point OLLAMA_URL at a reachable host
+    ports:
+      - "8080:8080"
+    volumes:
+      - pib-files:/data/files
+
+  web:
+    build:
+      context: ./frontend
+    container_name: pib-web
+    depends_on:
+      - api
+    ports:
+      - "8081:80"
+
+volumes:
+  pib-mongo-data:
+  pib-files:

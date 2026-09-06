@@ -1,0 +1,25 @@
+{
+  // Java 17 or newer. If VS Code picks up an older JDK, set the path here.
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "java.compile.nullAnalysis.mode": "disabled",
+
+  // the Java extension compiles into its own folder, so Maven's target/ is never
+  // half-written by two compilers at once, which is what produced the
+  // "Unresolved compilation problems" crash on the first run
+  "java.autobuild.enabled": true,
+
+  "files.exclude": {
+    "**/target": true,
+    "**/node_modules": true,
+    "**/dist": true
+  },
+  "search.exclude": {
+    "**/target": true,
+    "**/node_modules": true,
+    "**/dist": true
+  },
+  "files.eol": "\n",
+  "[java]": { "editor.tabSize": 4 },
+  "[javascriptreact]": { "editor.tabSize": 2 },
+  "[javascript]": { "editor.tabSize": 2 }
+}

@@ -1,0 +1,34 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "java",
+      "name": "API",
+      "request": "launch",
+      "mainClass": "com.proitbridge.lms.LmsApplication",
+      "projectName": "pib-lms",
+      "env": {
+        "JWT_SECRET": "development-secret-change-me-at-least-32-characters",
+        "MONGODB_URI": "mongodb://localhost:27017/pib_lms",
+        "SEED_ENABLED": "true",
+        "MAIL_ENABLED": "false",
+        "AI_ENABLED": "false"
+      }
+    },
+    {
+      "type": "chrome",
+      "name": "Frontend in the browser",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/frontend/src"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Everything",
+      "configurations": ["API", "Frontend in the browser"],
+      "preLaunchTask": "frontend: dev",
+      "stopAll": true
+    }
+  ]
+}
