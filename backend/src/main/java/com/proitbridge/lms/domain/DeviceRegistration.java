@@ -6,8 +6,10 @@ import java.time.Instant;
 import java.util.*;
 
 /**
- * One row per signed-in device. Two are allowed. A third needs an admin to
- * release a slot, which puts a human between a shared password and a new viewer.
+ * One row per device this account has signed in from. How many are allowed is set in
+ * Settings, separately for learners and for staff. A device already on this list is
+ * always let back in; only a new one past the limit needs an admin to release a slot,
+ * which puts a human between a shared password and a new viewer.
  */
 @Document("devices")
 public class DeviceRegistration {

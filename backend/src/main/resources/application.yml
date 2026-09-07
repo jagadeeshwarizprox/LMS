@@ -55,9 +55,11 @@ lms:
     ip-window-minutes: ${AUTH_IP_WINDOW:1}
     reset-ttl-minutes: ${AUTH_RESET_TTL:60}
     max-resets-per-hour: ${AUTH_MAX_RESETS:3}
-  access:
-    device-limit: ${DEVICE_LIMIT:2}
-    idle-minutes: ${IDLE_MINUTES:120}
+    
+    reset-ttl-minutes: ${AUTH_RESET_TTL:60}
+    max-resets-per-hour: ${AUTH_MAX_RESETS:3}
+  meeting:
+    open-before-minutes: 10
   meeting:
     open-before-minutes: 10
     open-after-minutes: 15

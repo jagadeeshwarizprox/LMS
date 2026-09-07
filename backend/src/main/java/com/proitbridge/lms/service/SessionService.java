@@ -6,13 +6,13 @@ import com.proitbridge.lms.domain.User;
 import com.proitbridge.lms.repo.ActiveSessionRepository;
 import com.proitbridge.lms.repo.DeviceRegistrationRepository;
 import com.proitbridge.lms.repo.UserRepository;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -27,16 +27,33 @@ public class SessionService {
     private final DeviceRegistrationRepository devices;
     private final UserRepository users;
     private final ActivityService activity;
-    private final int deviceLimit;
-    private final int idleMinutes;
+    private final SettingsService settings;
 
     public SessionService(ActiveSessionRepository sessions, DeviceRegistrationRepository devices,
                           UserRepository users, ActivityService activity,
-                          @Value("${lms.access.device-limit}") int deviceLimit,
-                          @Value("${lms.access.idle-minutes}") int idleMinutes) {
+                          SettingsService settings) {
         this.sessions = sessions; this.devices = devices; this.users = users;
-        this.activity = activity; this.deviceLimit = deviceLimit; this.idleMinutes = idleMinutes;
+        this.activity = activity; this.settings = settings;
     }
+
+    /*
+     * The limits are read on every sign in rather than held in a field, so a change made
+     * in Settings applies to the next attempt and nothing has to be restarted.
+     *
+     * Staff work from more places than a learner does: an office machine, a laptop, a
+     * phone, a class they are taking from somewhere else. Learners get a smaller number
+     * because the limit is there to stop one paid account being passed around.
+     */
+    private int limitFor(User user) {
+        return user.getRole() == User.Role.LEARNER
+                ? settings.getInt("access.deviceLimit.learner", 3)
+                : settings.getInt("access.deviceLimit.staff", 10);
+    }
+
+    private int idleMinutes() { return settings.getInt("access.idleMinutes", 120); }
+
+    /** A device nobody has signed in from for this long stops holding a slot. */
+    private int forgetDays() { return settings.getInt("access.deviceForgetDays", 30); }
 
     /** Called on a successful sign in, after the password has already been checked. */
     public ActiveSession open(User user, String deviceId, String label, String ip, String userAgent) {
@@ -61,27 +78,59 @@ public class SessionService {
         return sessions.save(s);
     }
 
+    /**
+     * A device this account has used before is always let back in.
+     *
+     * This is the rule the old version got wrong. The limit counted registration rows,
+     * which nothing ever removed, so signing out did not give the slot back and the same
+     * browser could be refused on its own second sign in. A known device now only has its
+     * last seen stamp refreshed, and a device an admin released is simply re-admitted
+     * rather than blacklisted, because releasing a slot is not a ban.
+     *
+     * The count is only ever consulted for a device that is genuinely new.
+     */
     private void registerDevice(User user, String deviceId, String label, String ip) {
         if (deviceId == null || deviceId.isBlank()) return;
         var existing = devices.findByUserIdAndDeviceId(user.getId(), deviceId);
         if (existing.isPresent()) {
             DeviceRegistration d = existing.get();
             if (d.isRevoked()) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "This device was removed from your account. Ask an admin to allow it again.");
+                d.setRevoked(false);
+                activity.log(user.getId(), user.getEmail(), "DEVICE_REJOINED", "user",
+                        "a released device signed in again");
             }
             d.setLastSeen(Instant.now());
             d.setLastIp(ip);
+            if (label != null && !label.isBlank()) d.setLabel(label);
             devices.save(d);
             return;
         }
-        List<DeviceRegistration> live = devices.findByUserIdAndRevokedFalse(user.getId());
-        if (live.size() >= deviceLimit) {
+
+        List<DeviceRegistration> live = new ArrayList<>(devices.findByUserIdAndRevokedFalse(user.getId()));
+
+        /* a browser that cleared its storage, or one used once from a friend's machine,
+           leaves a row behind that nobody will ever sign in from again. Those are dropped
+           here so a slot is never held by a device that stopped existing */
+        int forget = forgetDays();
+        if (forget > 0) {
+            Instant cutoff = Instant.now().minus(forget, ChronoUnit.DAYS);
+            List<DeviceRegistration> stale = live.stream()
+                    .filter(d -> d.getLastSeen() == null || d.getLastSeen().isBefore(cutoff))
+                    .toList();
+            if (!stale.isEmpty()) {
+                devices.deleteAll(stale);
+                live.removeAll(stale);
+            }
+        }
+
+        int limit = limitFor(user);
+        if (live.size() >= limit) {
             activity.log(user.getId(), user.getEmail(), "DEVICE_LIMIT_HIT", "user",
-                    live.size() + " devices already registered");
+                    live.size() + " of " + limit + " devices already registered");
             throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "You are signed in on " + live.size() + " devices already. "
-                            + "Ask an admin to release one before adding another.");
+                    "This account is already set up on " + live.size()
+                            + (limit == 1 ? " device" : " devices")
+                            + ", which is the limit. Ask an admin to release one.");
         }
         DeviceRegistration d = new DeviceRegistration();
         d.setUserId(user.getId());
@@ -97,7 +146,7 @@ public class SessionService {
         return sessions.findById(sessionId).map(s -> {
             if (!s.isCurrent()) return false;
             if (users.findById(s.getUserId()).map(User::isSuspended).orElse(true)) return false;
-            if (ChronoUnit.MINUTES.between(s.getLastSeenAt(), Instant.now()) > idleMinutes) {
+            if (ChronoUnit.MINUTES.between(s.getLastSeenAt(), Instant.now()) > idleMinutes()) {
                 s.setCurrent(false);
                 s.setEndedReason("IDLE");
                 sessions.save(s);
@@ -129,11 +178,21 @@ public class SessionService {
         return devices.findByUserId(userId);
     }
 
+    /**
+     * Releasing frees the slot and forgets the device. It is not a ban: if the learner
+     * comes back on that same browser it registers again like any other, which is what
+     * an admin means when they release one to unstick somebody.
+     */
     public void releaseDevice(String deviceRowId, String actorEmail) {
         devices.findById(deviceRowId).ifPresent(d -> {
-            d.setRevoked(true);
-            devices.save(d);
-            closeAllFor(d.getUserId(), "REPLACED");
+            for (ActiveSession s : sessions.findByUserIdAndCurrentTrue(d.getUserId())) {
+                if (d.getDeviceId() != null && d.getDeviceId().equals(s.getDeviceId())) {
+                    s.setCurrent(false);
+                    s.setEndedReason("RELEASED");
+                    sessions.save(s);
+                }
+            }
+            devices.delete(d);
             activity.log(null, actorEmail, "RELEASE_DEVICE", "user", d.getUserId());
         });
     }

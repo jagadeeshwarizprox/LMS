@@ -25,6 +25,9 @@ export default function Register() {
   const [issued, setIssued] = useState(null)
   const [failed, setFailed] = useState(null)
   const [lockouts, setLockouts] = useState([])
+  /* the device list for one learner, opened from their row. Nothing is fetched until
+     an admin asks, because it is only ever needed for the person on the phone */
+  const [devices, setDevices] = useState(null)
 
   const loadLockouts = () =>
     api.get('/admin/access/lockouts').then(setLockouts).catch(() => setLockouts([]))
@@ -34,6 +37,33 @@ export default function Register() {
       await api.post('/admin/access/lockouts/unlock', { email: row.email })
       toast.push(`${row.email} can sign in again.`)
       await loadLockouts()
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
+
+  /* "it says I am on too many devices" is a sign-in problem, so it is answered from
+     the same page as the password reset and the unlock rather than a separate screen */
+  const openDevices = async (l) => {
+    setDevices({ learner: l, rows: null })
+    try {
+      setDevices({ learner: l, rows: await api.get(`/admin/access/users/${l.userId}/devices`) })
+    } catch (e) {
+      toast.push(e.message, 'bad')
+      setDevices(null)
+    }
+  }
+
+  const releaseDevice = async (row) => {
+    const ok = await ask({
+      title: 'Release this device?',
+      body: 'It frees a slot straight away. It is not a block: if they sign in from that '
+        + 'same device again it simply registers again.',
+      confirmLabel: 'Release'
+    })
+    if (!ok) return
+    try {
+      await api.post(`/admin/access/devices/${row.id}/release`, {})
+      toast.push('Device released.')
+      await openDevices(devices.learner)
     } catch (e) { toast.push(e.message, 'bad') }
   }
 
@@ -330,6 +360,33 @@ export default function Register() {
         </Card>
       )}
 
+      {devices && (
+        <Card
+          title={`Devices \u2014 ${devices.learner.name}`}
+          note="Every device this account has signed in from. Releasing one frees a slot."
+          actions={<button className="btn btn-quiet" onClick={() => setDevices(null)}>Close</button>}
+        >
+          {devices.rows === null ? <p className="small muted mb-0">Loading\u2026</p>
+            : devices.rows.length === 0 ? <p className="small muted mb-0">No devices registered yet.</p> : (
+            <table className="table table-pib mb-0">
+              <thead><tr><th>Device</th><th>Last used</th><th>Last address</th><th /></tr></thead>
+              <tbody>
+                {devices.rows.map((d) => (
+                  <tr key={d.id}>
+                    <td>{d.label || 'Browser'}</td>
+                    <td className="mono">{d.lastSeen ? fmtDateTime(d.lastSeen) : '\u2014'}</td>
+                    <td className="mono">{d.lastIp || '\u2014'}</td>
+                    <td className="text-end">
+                      <button className="btn btn-quiet" onClick={() => releaseDevice(d)}>Release</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      )}
+
       <Card
         title="Learners"
         actions={
@@ -379,6 +436,7 @@ export default function Register() {
                       <div className="row-actions">
                         <button className="btn btn-s" onClick={() => resend(l.learnerId)}>Resend login</button>
                         <button className="btn btn-s" onClick={() => resetPassword(l)}>Reset password</button>
+                        <button className="btn btn-s" onClick={() => openDevices(l)}>Devices</button>
                       </div>
                     </td>
                   </tr>

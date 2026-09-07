@@ -93,9 +93,23 @@ public class SettingsService {
         Map.of("key", "session.openAfterMinutes", "label", "Join closes after", "type", "number",
                "group", "Sessions", "default", "15",
                "note", "Minutes after a session ends that the link stops working."),
-        Map.of("key", "access.deviceLimit", "label", "Devices per account", "type", "number",
-               "group", "Access", "default", "2",
-               "note", "A third device is refused until an admin releases one."),
+        Map.of("key", "access.deviceLimit.learner", "label", "Devices per learner", "type", "number",
+               "group", "Access", "default", "3",
+               "note", "How many different devices one learner account may be used from. "
+               + "A device they have already used is always let back in, however "
+               + "often they sign out. Only a new one past this number is refused, "
+               + "and an admin releases a slot from the learner list."),
+
+        Map.of("key", "access.deviceLimit.staff", "label", "Devices per admin or mentor", "type", "number",
+              "group", "Access", "default", "10",
+              "note", "The same count for super admins, admins and mentors, who work from "
+               + "more machines than a learner does."),
+
+        Map.of("key", "access.deviceForgetDays", "label", "Forget an unused device after", "type", "number",
+               "group", "Access", "default", "30",
+               "note", "Days without a sign in before a device stops holding a slot. This is "
+               + "what returns the slot from a browser that cleared its storage or a "
+               + "machine nobody uses any more. Zero keeps every device for ever."),
         Map.of("key", "access.idleMinutes", "label", "Session idle timeout", "type", "number",
                "group", "Access", "default", "120",
                "note", "Minutes of inactivity before a session is closed."),

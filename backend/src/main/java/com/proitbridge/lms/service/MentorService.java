@@ -177,6 +177,7 @@ public class MentorService {
         Map<String, Object> s = learnerService.stats(l);
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("learnerId", l.getId());
+        m.put("userId", l.getUserId());
         m.put("name", u == null ? "Learner" : u.getFullName());
         m.put("email", u == null ? null : u.getEmail());
         m.put("loginId", u == null ? null : u.getLoginId());
