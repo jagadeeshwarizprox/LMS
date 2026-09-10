@@ -113,6 +113,14 @@ public class SettingsService {
         Map.of("key", "access.idleMinutes", "label", "Session idle timeout", "type", "number",
                "group", "Access", "default", "120",
                "note", "Minutes of inactivity before a session is closed."),
+        Map.of("key", "access.singleSession.staff", "label", "One session at a time for staff",
+               "type", "toggle", "group", "Access", "default", "false",
+               "note", "Learners are always held to one session at a time, because the rule is "
+                     + "there to stop a paid account being passed around. Staff are not, by "
+                     + "default: an admin with the register open on a desktop and a laptop in a "
+                     + "session is ordinary, and applying the learner rule to them meant two "
+                     + "people sharing an account signed each other out every few minutes. Turn "
+                     + "this on if you would rather that sharing were impossible to miss."),
         Map.of("key", "session.mentorsMayCreate", "label", "Mentors can create sessions",
                "type", "toggle", "group", "Sessions", "default", "true",
                "note", "On, a mentor sets up their own weekly sessions and one-offs and they "

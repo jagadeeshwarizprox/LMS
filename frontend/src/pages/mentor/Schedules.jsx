@@ -6,9 +6,19 @@ import { TableSkeleton } from '../../components/Skeletons'
 import { Card, Empty, LoadError, Page, Tag } from '../../components/Ui'
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+/*
+ * The kinds a repeating session can be.
+ *
+ * Recap, interactive and industry sessions are all run and the server has always known
+ * how to label them, but they were missing from this list, so there was no way to create
+ * one and an existing slot of that kind showed its raw code or fell through to the word
+ * "Session". The list and the server now agree.
+ */
 const KINDS = [
   ['GROUP_DOUBT', 'Group doubt clearing'], ['DOUBT', 'One to one doubt clearing'],
-  ['LIVE', 'Live session'], ['PROJECT', 'Project session'],
+  ['LIVE', 'Live session'], ['INTERACTIVE', 'Interactive session'],
+  ['RECAP', 'Recap session'], ['INDUSTRY', 'Industry expert session'],
+  ['PROJECT', 'Project session'],
   ['ONBOARDING', 'Onboarding call'], ['INDUCTION', 'Induction']
 ]
 

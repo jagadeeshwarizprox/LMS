@@ -43,9 +43,9 @@ public class BootstrapSeeder {
         {"biweekly_call", "Biweekly progress call", true, false},
         {"live_sessions", "Live sessions", true, true},
         {"industry_sessions", "Industry expert sessions", true, true},
-        {"doubt_clearing", "Doubt clearing", true, true},
-        {"one_to_one_booking", "One to one slot booking", true, false},
-        {"group_doubt", "Group doubt clearing", false, true},
+        {"doubt_clearing", "Doubt clearing, one to one", true, true},
+        {"one_to_one_booking", "Booking a one to one slot", true, false},
+        {"group_doubt", "Doubt clearing, whole cohort", false, true},
         {"project_sessions", "Project sessions", true, true},
         {"jobs_referrals", "Job openings and referrals", true, true},
         {"case_studies", "Case studies", true, true},
@@ -66,10 +66,32 @@ public class BootstrapSeeder {
         return args -> {
             for (Object[] d : FEATURES) {
                 String key = (String) d[0];
-                if (features.findByKey(key).isPresent()) continue;
+                String label = (String) d[1];
+                var existing = features.findByKey(key);
+                if (existing.isPresent()) {
+                    /*
+                     * The label is ours; the two toggles are the admin's.
+                     *
+                     * "Doubt clearing" and "Group doubt clearing" sat next to each other
+                     * reading as the same feature written twice, and nobody could say
+                     * which one they were switching off. Renaming them in this list alone
+                     * would have changed nothing on an existing database, because the
+                     * seeder only ever added what was missing. A label correction now
+                     * reaches a database that already exists, and the on and off state
+                     * somebody chose is never touched.
+                     */
+                    Feature f = existing.get();
+                    if (!label.equals(f.getLabel())) {
+                        String was = f.getLabel();
+                        f.setLabel(label);
+                        features.save(f);
+                        log.info("Renamed the feature toggle {} from \"{}\" to \"{}\"", key, was, label);
+                    }
+                    continue;
+                }
                 Feature f = new Feature();
                 f.setKey(key);
-                f.setLabel((String) d[1]);
+                f.setLabel(label);
                 f.setForPremium((Boolean) d[2]);
                 f.setForBatch((Boolean) d[3]);
                 features.save(f);

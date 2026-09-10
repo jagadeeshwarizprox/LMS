@@ -428,6 +428,7 @@ public class ScheduleService {
         return switch (kind == null ? "" : kind) {
             case "GROUP_DOUBT", "DOUBT" -> "Doubt clearing";
             case "RECAP" -> "Recap";
+            case "INTERACTIVE" -> "Interactive session";
             case "PROJECT" -> "Project session";
             case "INDUSTRY", "LIVE" -> "Industry session";
             case "INDUCTION" -> "Induction";

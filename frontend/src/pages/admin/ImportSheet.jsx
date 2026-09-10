@@ -7,6 +7,23 @@ import { Card, Page, Stat, Tag } from '../../components/Ui'
  * The sheet is the source today and the CRM feed is the source later. The importer
  * is the only thing that knows the difference.
  */
+/**
+ * What happened to each tab in the workbook.
+ *
+ * The importer used to read only sheets named premium, group or batch, and skip every
+ * other tab without a word. A workbook whose tabs were called Sheet1 imported nothing and
+ * reported four zeroes, which reads as an empty file rather than as a file that was never
+ * opened. Every sheet now says what it was read as, so a zero always has a reason next to it.
+ */
+function SheetNotes({ sheets }) {
+  if (!sheets || sheets.length === 0) return null
+  return (
+    <ul className="tiny muted" style={{ margin: '0 0 12px', paddingLeft: 18 }}>
+      {sheets.map((line, i) => <li key={i}>{line}</li>)}
+    </ul>
+  )
+}
+
 export default function ImportSheet() {
   const toast = useToast()
   const [file, setFile] = useState(null)
@@ -98,6 +115,7 @@ export default function ImportSheet() {
                   tone={preview.skipped ? 'var(--stop)' : undefined} />
               </div>
             </div>
+            <SheetNotes sheets={preview.sheets} />
             {preview.created === 0 && preview.upgraded === 0 ? (
               <div className="locked-note">
                 Nothing in this file is new. Importing it would change nothing.
@@ -110,8 +128,16 @@ export default function ImportSheet() {
           </div>
         )}
 
+        {/*
+          * This used to sit here permanently, under every result.
+          *
+          * An import that read nothing showed four zeroes with a note about payment
+          * underneath, and the note was the only sentence on the screen, so a failed
+          * import looked like a payment problem. It is a fact about how the sheet is
+          * used, so it belongs with the upload box and not with the outcome.
+          */}
         <div className="locked-note mt-3">
-          A row reaches the sheet only after the sale closes, so a new row is treated as
+          Rows reach this sheet only after the sale closes, so a new row is treated as
           payment confirmed. There is no separate payment step.
         </div>
       </Card>
@@ -124,6 +150,10 @@ export default function ImportSheet() {
             <div className="col-6 col-lg-3"><Stat value={summary.existing} label="Already there" /></div>
             <div className="col-6 col-lg-3"><Stat value={summary.skipped} label="Skipped" /></div>
           </div>
+          <Card title="Sheet by sheet">
+            <SheetNotes sheets={summary.sheets} />
+          </Card>
+
           <Card title="Row by row">
             <div className="table-responsive" style={{ maxHeight: 420 }}>
               <table className="table table-pib mb-0">

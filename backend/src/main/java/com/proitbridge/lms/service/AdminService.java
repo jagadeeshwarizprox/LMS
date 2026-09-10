@@ -79,14 +79,28 @@ public class AdminService {
         return m;
     }
 
-    public List<Map<String, Object>> register(String trackType, String batchId, String query) {
+    /**
+     * The register, optionally narrowed to one track, one batch or one mentor.
+     *
+     * The mentor filter is what the Mentors screen links into: clicking a name there used
+     * to leave you scanning the whole register for their learners by eye.
+     *
+     * Search deliberately reads the learner's own name and email and nothing else. A
+     * search that also matched the mentor column returned that mentor's entire caseload
+     * for a query that looked like one person's name, which reads as the wrong rows
+     * rather than as a feature.
+     */
+    public List<Map<String, Object>> register(String trackType, String batchId,
+                                              String mentorId, String query) {
+        String needle = query == null || query.isBlank() ? null : query.trim().toLowerCase();
         return learners.findAll().stream()
                 .filter(l -> trackType == null || l.getTrackType().name().equalsIgnoreCase(trackType))
                 .filter(l -> batchId == null || batchId.equals(l.getBatchId()))
+                .filter(l -> mentorId == null || mentorId.equals(l.getMentorId()))
                 .map(mentorService::learnerRow)
-                .filter(r -> query == null || String.valueOf(r.get("name")).toLowerCase()
-                        .contains(query.toLowerCase())
-                        || String.valueOf(r.get("email")).toLowerCase().contains(query.toLowerCase()))
+                .filter(r -> needle == null
+                        || String.valueOf(r.get("name")).toLowerCase().contains(needle)
+                        || String.valueOf(r.get("email")).toLowerCase().contains(needle))
                 .collect(Collectors.toList());
     }
 
@@ -141,18 +155,47 @@ public class AdminService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "Choose the course this learner is on.");
         }
+        Learner.TrackType track =
+                Learner.TrackType.valueOf(body.getOrDefault("trackType", "PREMIUM").toUpperCase());
+
         String batchCode = body.get("batchCode");
         if (body.get("batchId") != null && !body.get("batchId").isBlank()) {
             batchCode = batches.findById(body.get("batchId")).map(Batch::getCode).orElse(batchCode);
         }
+        /*
+         * A batch learner has to be put in a named batch.
+         *
+         * Leaving it empty used to fall through to the Tuesday placement rule, which
+         * quietly dropped the learner into whichever cohort was running. That rule is
+         * right for the sheet import, where nobody is watching and a batch column is
+         * often blank, and wrong here: somebody is on the form, has the batch in front of
+         * them, and left the box empty by accident. The learner then turned up in a
+         * cohort nobody had chosen, with that cohort's mentor.
+         */
+        if (track == Learner.TrackType.BATCH && (batchCode == null || batchCode.isBlank())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Choose the batch. A batch learner is not placed automatically from here.");
+        }
+
+        /*
+         * Credentials go out by mail, and everything after that happens on WhatsApp: the
+         * group link, the reminder when they have not signed in, the nudge from their
+         * mentor. An account with no number is one nobody can reach.
+         */
+        String phone = Validate.phone(body.get("phone"), "Phone number");
+        String whatsapp = Validate.phone(body.get("whatsapp"), "WhatsApp number");
+        if (phone == null && whatsapp == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Give a phone or a WhatsApp number. Credentials and everything after "
+                    + "them are followed up on one of the two.");
+        }
+
         LocalDate joined = body.get("joinedOn") == null || body.get("joinedOn").isBlank()
                 ? LocalDate.now() : LocalDate.parse(body.get("joinedOn"));
 
         var row = new ProvisioningService.RecordRow(
-                body.get("fullName"), body.get("email"), body.get("phone"), body.get("whatsapp"),
-                bundleName,
-                Learner.TrackType.valueOf(body.getOrDefault("trackType", "PREMIUM").toUpperCase()),
-                batchCode, joined, "manual");
+                body.get("fullName"), body.get("email"), phone, whatsapp,
+                bundleName, track, batchCode, joined, "manual");
         var outcome = provisioning.provision(row, true, actorEmail);
 
         Map<String, Object> out = new LinkedHashMap<>();
@@ -326,6 +369,8 @@ public class AdminService {
             body.setStartDate(ProvisioningService.nextTuesday(LocalDate.now()));
         }
         if (body.getInductionDate() == null) body.setInductionDate(body.getStartDate());
+        body.setWhatsappLink(Validate.link(body.getWhatsappLink(), "WhatsApp link"));
+        body.setCommunityLink(Validate.link(body.getCommunityLink(), "Community link"));
         Batch saved = batches.save(body);
         activity.log(null, actorEmail, "CREATE_BATCH", "batch", saved.getCode());
         return saved;
@@ -349,9 +394,9 @@ public class AdminService {
         String name = body.get("name");
         if (name != null) b.setName(name.trim());
         String wa = body.get("whatsappLink");
-        if (wa != null) b.setWhatsappLink(wa.isBlank() ? null : wa.trim());
+        if (wa != null) b.setWhatsappLink(Validate.link(wa, "WhatsApp link"));
         String community = body.get("communityLink");
-        if (community != null) b.setCommunityLink(community.isBlank() ? null : community.trim());
+        if (community != null) b.setCommunityLink(Validate.link(community, "Community link"));
 
         String start = body.get("startDate");
         if (start != null && !start.isBlank()) {
@@ -464,6 +509,18 @@ public class AdminService {
             m.put("mentorId", b.getMentorId());
             m.put("mentor", b.getMentorId() == null ? null
                     : users.findById(b.getMentorId()).map(User::getFullName).orElse(null));
+            /*
+             * Moving one learner to a different mentor is a deliberate act and must not
+             * silently rewrite the whole cohort, so the batch keeps its own mentor. What
+             * was missing was any sign of the divergence: this screen went on showing the
+             * batch mentor and looked simply out of date. The count says how many learners
+             * in this batch now answer to somebody else, so the row is honest either way.
+             */
+            m.put("movedOut", b.getMentorId() == null ? 0
+                    : learners.findByBatchId(b.getId()).stream()
+                        .filter(l -> l.getMentorId() != null
+                                && !l.getMentorId().equals(b.getMentorId()))
+                        .count());
             return m;
         }).collect(Collectors.toList());
     }

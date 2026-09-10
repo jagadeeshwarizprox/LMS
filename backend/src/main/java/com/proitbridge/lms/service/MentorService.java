@@ -484,6 +484,14 @@ public class MentorService {
         body.setId(null);
         body.setMentorId(mentorId);
         body.setOpen(true);
+        /*
+         * The learner's slot list filters on published, and this never set it. Every slot
+         * a mentor released was open, in the future, in scope, allowed by the feature
+         * toggles, and invisible: the mentor saw it on their own board, the learner's Open
+         * slots panel stayed empty, and the toast said "released to learners" the whole
+         * time. The button is called Release, so releasing is what it does.
+         */
+        body.setPublished(true);
         return slots.save(body);
     }
 

@@ -69,11 +69,14 @@ public class FeatureService {
      */
     public boolean sessionKindAllowed(Learner learner, String kind) {
         String key = switch (kind == null ? "" : kind) {
-            case "LIVE" -> "live_sessions";
+            case "LIVE", "INTERACTIVE" -> "live_sessions";
             case "INDUSTRY" -> "industry_sessions";
             case "DOUBT" -> "doubt_clearing";
             case "GROUP_DOUBT" -> "group_doubt";
             case "PROJECT" -> "project_sessions";
+            /* a recap is a re-teach of the live session, so it follows the same toggle:
+               a track that gets the session gets the chance to see it again */
+            case "RECAP" -> "live_sessions";
             default -> null;
         };
         return key == null || allowedUnlessConfiguredOff(learner, key);

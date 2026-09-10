@@ -63,7 +63,8 @@ public class AdminController {
         u.setId((String) body.get("id"));
         u.setEmail((String) body.get("email"));
         u.setFullName((String) body.get("fullName"));
-        u.setPhone((String) body.get("phone"));
+        u.setPhone(Validate.phone((String) body.get("phone"), "Phone number"));
+        u.setWhatsapp(Validate.phone((String) body.get("whatsapp"), "WhatsApp number"));
         u.setRole(User.Role.MENTOR);
         u.setReportsToId((String) body.get("reportsToId"));
         if (u.getId() != null && !staff.isMentor(u.getId())) {
@@ -103,8 +104,9 @@ public class AdminController {
     @GetMapping("/register")
     public List<Map<String, Object>> register(@RequestParam(required = false) String trackType,
                                               @RequestParam(required = false) String batchId,
+                                              @RequestParam(required = false) String mentorId,
                                               @RequestParam(required = false) String q) {
-        return admin.register(trackType, batchId, q);
+        return admin.register(trackType, batchId, mentorId, q);
     }
 
     /* ------------------------------------------------------------- provisioning */
@@ -222,8 +224,28 @@ public class AdminController {
     @PostMapping("/cover")
     public MentorCover arrangeCover(@RequestBody Map<String, String> body) {
         return cover.arrange(body.get("mentorId"), body.get("coveringMentorId"),
-                LocalDate.parse(body.get("from")), LocalDate.parse(body.get("until")),
+                day(body.get("from"), "From"), day(body.get("until"), "Until"),
                 body.get("reason"), actor());
+    }
+
+    /**
+     * A bare LocalDate.parse on a request body turns an empty box into a stack trace and a
+     * five hundred, which tells whoever is arranging cover nothing at all about which of
+     * the two dates they missed. This says which one and asks for it.
+     */
+    private static LocalDate day(String value, String which) {
+        if (value == null || value.isBlank()) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST,
+                    which + " needs a date.");
+        }
+        try {
+            return LocalDate.parse(value.trim());
+        } catch (java.time.format.DateTimeParseException e) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST,
+                    which + " is not a date we can read. Use the date picker.");
+        }
     }
 
     @PostMapping("/cover/{id}/end")

@@ -114,34 +114,97 @@ export default function ChapterDetail() {
     run(() => api.put(`/super/catalogue/chapters/${id}/teachback`,
       { ...c.teachback, ...patch }), 'Teach back saved.')
 
-  const addQuestion = async () => {
+  /**
+   * Writing a question, and editing one that already exists.
+   *
+   * Three things were wrong with this. The correct option was pre-filled with A and not
+   * required, so a question where nobody touched that box saved silently with the first
+   * option marked right. The explanation was optional, so a learner could be told they
+   * were wrong and nothing else. And once a question was saved there was no way back into
+   * it at all: the list rendered as plain text with no edit and no delete, so a typo in a
+   * published test could only be fixed in the database.
+   *
+   * The same form now does both. Opening a model-drafted question in it and saving is
+   * what reviews it, which is the review step the Draft tag has always been promising.
+   */
+  const questionForm = async (existing) => {
+    const opts = existing?.options || []
+    const letters = ['A', 'B', 'C', 'D']
     const r = await ask({
-      title: 'Write a question',
+      title: existing ? 'Edit the question' : 'Write a question',
+      body: existing?.draft
+        ? 'The model drafted this one. Saving it is what marks it reviewed and lets '
+          + 'learners see it.'
+        : undefined,
       fields: [
-        { name: 'prompt', label: 'Question', required: true, multiline: true },
-        { name: 'a', label: 'Option A', required: true },
-        { name: 'b', label: 'Option B', required: true },
-        { name: 'c', label: 'Option C' },
-        { name: 'd', label: 'Option D' },
-        { name: 'correct', label: 'Correct option', value: 'A',
-          options: ['A', 'B', 'C', 'D'].map((x) => ({ value: x, label: `Option ${x}` })) },
-        { name: 'explanation', label: 'Why', placeholder: 'Shown after they answer' }
+        { name: 'prompt', label: 'Question', required: true, multiline: true,
+          value: existing?.prompt || '' },
+        { name: 'a', label: 'Option A', required: true, value: opts[0] || '' },
+        { name: 'b', label: 'Option B', required: true, value: opts[1] || '' },
+        { name: 'c', label: 'Option C', value: opts[2] || '' },
+        { name: 'd', label: 'Option D', value: opts[3] || '' },
+        /* no default: the box has to be answered rather than accepted */
+        { name: 'correct', label: 'Correct option', required: true,
+          value: existing ? letters[existing.correctIndex] || '' : '',
+          placeholder: 'Which one is right?',
+          options: letters.map((x) => ({ value: x, label: `Option ${x}` })) },
+        { name: 'explanation', label: 'Why', required: true, multiline: true,
+          value: existing?.explanation || '',
+          placeholder: 'Shown after they answer. This is the only teaching the test does.' },
+        { name: 'marks', label: 'Marks', type: 'number', min: 1,
+          value: String(existing?.marks || 1),
+          hint: 'What this question is worth against the pass mark. Leave at one if every '
+              + 'question in the test counts the same.' }
       ],
-      confirmLabel: 'Add question'
+      confirmLabel: existing ? 'Save the question' : 'Add question'
     })
     if (!r) return
     const options = [r.a, r.b, r.c, r.d].filter((x) => x && x.trim())
-    const correctIndex = ['A', 'B', 'C', 'D'].indexOf(r.correct || 'A')
+    const correctIndex = letters.indexOf(r.correct)
+    if (correctIndex < 0) { toast.push('Mark which option is correct.', 'bad'); return }
     if (correctIndex >= options.length) { toast.push('That option is empty.', 'bad'); return }
     run(() => api.post('/super/catalogue/questions', {
-      chapterId: id, prompt: r.prompt, options, correctIndex, explanation: r.explanation
-    }), 'Question added.')
+      id: existing?.id || null,
+      chapterId: id,
+      prompt: r.prompt,
+      options,
+      correctIndex,
+      explanation: r.explanation,
+      marks: Math.max(1, Number(r.marks) || 1)
+    }), existing ? 'Question saved.' : 'Question added.')
   }
 
+  const addQuestion = () => questionForm(null)
+
+  const removeQuestion = async (q) => {
+    const ok = await ask({
+      title: 'Delete this question?',
+      body: q.prompt,
+      intent: 'danger',
+      confirmLabel: 'Delete'
+    })
+    if (!ok) return
+    run(() => api.del(`/super/catalogue/questions/${q.id}`), 'Question deleted.')
+  }
+
+  /*
+   * The model writes five questions from the chapter's own topics and marks every one of
+   * them a draft. Nothing drafted is ever served to a learner: the test only ever contains
+   * questions a person has opened and saved. The button said "Draft five" and explained
+   * none of that, so nobody knew what pressing it would do.
+   */
   const draft = async () => {
+    const ok = await ask({
+      title: 'Draft five questions from this chapter?',
+      body: 'The model reads the topics in this chapter and writes five multiple choice '
+          + 'questions from them. They arrive marked as drafts and no learner sees a draft. '
+          + 'Open each one, correct it and save it, and that is what puts it into the test.',
+      confirmLabel: 'Draft five'
+    })
+    if (!ok) return
     try {
       await api.post(`/super/chapters/${id}/draft-quiz`, { count: 5 })
-      toast.push('Drafted. Every one needs reviewing before a learner sees it.')
+      toast.push('Five drafted. Open each one to review it before learners see it.')
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
   }
@@ -471,7 +534,10 @@ export default function ChapterDetail() {
                   <div className="q" key={q.id}>
                     <span className="drag">{String(qi + 1).padStart(2, '0')}</span>
                     <div className="qb">
-                      <b>{q.prompt} {q.draft && <Tag kind="wait">Draft</Tag>}</b>
+                      <b>
+                        {q.prompt} {q.draft && <Tag kind="wait">Draft</Tag>}
+                        {(q.marks || 1) !== 1 && <Tag kind="batch">{q.marks} marks</Tag>}
+                      </b>
                       <div className="qmeta">
                         {q.options.map((o, oi) => (
                           <span key={oi} style={oi === q.correctIndex
@@ -481,13 +547,24 @@ export default function ChapterDetail() {
                         ))}
                       </div>
                     </div>
+                    <div className="d-flex gap-2 align-items-start">
+                      <button className="btn btn-s" onClick={() => questionForm(q)}>
+                        {q.draft ? 'Review' : 'Edit'}
+                      </button>
+                      <button className="btn btn-s btn-x" onClick={() => removeQuestion(q)}>
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
             )}
             <div className="d-flex gap-2 align-items-center flex-wrap">
               <button className="btn btn-s" onClick={addQuestion}>Write a question</button>
-              <button className="btn btn-s" onClick={draft}>Draft five</button>
+              <button className="btn btn-s" onClick={draft}
+                title="The model writes five questions from this chapter, as drafts for you to review">
+                Draft five with AI
+              </button>
               <label className="d-flex align-items-center gap-2 tiny muted">
                 Pass
                 <input className="form-control form-control-sm" style={{ width: 74 }} type="number"

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
+import { linkError } from '../../api/validators'
 import { useToast } from '../../context/ToastContext'
 import { useDialog } from '../../components/Dialog'
 import { TableSkeleton } from '../../components/Skeletons'
@@ -30,6 +31,10 @@ export default function Batches() {
     return <Page title="Batches"><LoadError error={loadError} onRetry={load} /></Page>
   }
   if (!rows) return <TableSkeleton />
+
+  /* a link box that took three random letters resolved against our own origin, so a
+     learner tapping Group landed back on the LMS home page */
+  const linkProblem = linkError(draft.whatsappLink)
 
   const create = async () => {
     try {
@@ -101,7 +106,8 @@ export default function Batches() {
           placeholder: `Keep ${b.mentor || 'as is'}`
         },
         { name: 'startDate', label: 'Start date', type: 'date' },
-        { name: 'whatsappLink', label: 'WhatsApp link', placeholder: b.whatsappLink || '' }
+        { name: 'whatsappLink', label: 'WhatsApp link', placeholder: b.whatsappLink || '',
+          validate: linkError }
       ],
       confirmLabel: 'Save'
     })
@@ -175,11 +181,16 @@ export default function Batches() {
           </div>
           <div className="col-md-2">
             <label className="form-label">WhatsApp link</label>
-            <input className="form-control" value={draft.whatsappLink} onChange={set('whatsappLink')} />
+            <input
+              className={`form-control ${linkProblem ? 'is-invalid' : ''}`}
+              placeholder="https://chat.whatsapp.com/..."
+              value={draft.whatsappLink} onChange={set('whatsappLink')}
+            />
+            {linkProblem && <div className="invalid-feedback">{linkProblem}</div>}
           </div>
           <div className="col-12">
             <button className="btn btn-pib" onClick={create}
-              disabled={!draft.code || !draft.mentorId}>Create the batch</button>
+              disabled={!draft.code || !draft.mentorId || !!linkProblem}>Create the batch</button>
           </div>
         </div>
       </Card>
@@ -193,7 +204,15 @@ export default function Batches() {
               {rows.map((b) => (
                 <tr key={b.id}>
                   <td className="mono">{b.code}</td>
-                  <td>{b.mentor || <span className="muted">Nobody yet</span>}</td>
+                  <td>
+                    {b.mentor || <span className="muted">Nobody yet</span>}
+                    {b.movedOut > 0 && (
+                      <div className="small" style={{ color: 'var(--warn)' }}
+                        title="Moving one learner is deliberate and does not change the batch mentor. This says how many have been moved.">
+                        {b.movedOut} learner{b.movedOut === 1 ? '' : 's'} now with someone else
+                      </div>
+                    )}
+                  </td>
                   <td>{b.bundle || '\u2014'}</td>
                   <td className="mono">{fmtDate(b.startDate)}</td>
                   <td className="mono">{b.size}</td>

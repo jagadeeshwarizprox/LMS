@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../../api/client'
+import { phoneError } from '../../api/validators'
 import { useToast } from '../../context/ToastContext'
 import { useDialog } from '../../components/Dialog'
 import Avatar from '../../components/Avatar'
@@ -20,10 +22,13 @@ import { Card, Empty, Page, Stat, Tag } from '../../components/Ui'
  */
 export default function Mentors() {
   const toast = useToast()
+  const nav = useNavigate()
   const { ask } = useDialog()
   const [rows, setRows] = useState(null)
   const [error, setError] = useState(null)
-  const [draft, setDraft] = useState({ fullName: '', email: '', phone: '', reportsToId: '' })
+  const [draft, setDraft] = useState({
+    fullName: '', email: '', phone: '', whatsapp: '', reportsToId: ''
+  })
   const [issued, setIssued] = useState(null)
 
   const load = () => api.get('/admin/people')
@@ -46,10 +51,15 @@ export default function Mentors() {
   const mentors = rows.filter((p) => p.role === 'MENTOR')
   const seniors = mentors.filter((m) => m.active)
 
+  /* the boxes took anything, so a mentor could be saved with a name in the phone field
+     and nobody found out until somebody tried to ring them */
+  const phoneProblem = phoneError(draft.phone)
+  const whatsappProblem = phoneError(draft.whatsapp)
+
   const add = async () => {
     try {
       const r = await api.post('/admin/people', draft)
-      setDraft({ fullName: '', email: '', phone: '', reportsToId: '' })
+      setDraft({ fullName: '', email: '', phone: '', whatsapp: '', reportsToId: '' })
       setIssued(r)
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
@@ -87,7 +97,8 @@ export default function Mentors() {
       title: `Edit ${m.name}`,
       fields: [
         { name: 'fullName', label: 'Name', value: m.name, required: true },
-        { name: 'phone', label: 'Phone', value: m.phone || '' },
+        { name: 'phone', label: 'Phone', value: m.phone || '', validate: phoneError },
+        { name: 'whatsapp', label: 'WhatsApp', value: m.whatsapp || '', validate: phoneError },
         {
           name: 'reportsToId', label: 'Reports to', value: m.reportsToId || '',
           options: [{ value: '', label: 'Nobody' }].concat(
@@ -170,9 +181,22 @@ export default function Mentors() {
           </div>
           <div className="col-md-2">
             <label className="form-label">Phone</label>
-            <input className="form-control" value={draft.phone} onChange={set('phone')} />
+            <input
+              className={`form-control ${phoneProblem ? 'is-invalid' : ''}`}
+              inputMode="tel" value={draft.phone} onChange={set('phone')}
+            />
+            {phoneProblem && <div className="invalid-feedback">{phoneProblem}</div>}
           </div>
-          <div className="col-md-3">
+          <div className="col-md-2">
+            <label className="form-label">WhatsApp</label>
+            <input
+              className={`form-control ${whatsappProblem ? 'is-invalid' : ''}`}
+              inputMode="tel" placeholder="Same as phone if blank"
+              value={draft.whatsapp} onChange={set('whatsapp')}
+            />
+            {whatsappProblem && <div className="invalid-feedback">{whatsappProblem}</div>}
+          </div>
+          <div className="col-md-2">
             <label className="form-label">Reports to</label>
             <select className="form-select" value={draft.reportsToId} onChange={set('reportsToId')}>
               <option value="">Nobody</option>
@@ -181,7 +205,8 @@ export default function Mentors() {
           </div>
           <div className="col-md-1">
             <button className="btn btn-pib w-100" onClick={add}
-              disabled={!draft.fullName || !draft.email}>Add</button>
+              disabled={!draft.fullName || !draft.email || !!phoneProblem || !!whatsappProblem}
+            >Add</button>
           </div>
         </div>
       </Card>
@@ -209,6 +234,16 @@ export default function Mentors() {
                     <td className="mono">{m.learners ?? 0}</td>
                     <td>{m.active ? <Tag kind="ok">Active</Tag> : <Tag kind="batch">Off</Tag>}</td>
                     <td className="text-end d-flex gap-2 justify-content-end">
+                      <button
+                        className="btn btn-quiet btn-sm"
+                        onClick={() => nav(`/admin/register?mentorId=${m.id}`)}
+                        disabled={!m.learners}
+                        title={m.learners
+                          ? `Open the register filtered to ${m.name}`
+                          : 'Nobody is assigned to them yet'}
+                      >
+                        View learners
+                      </button>
                       <button className="btn btn-quiet btn-sm" onClick={() => edit(m)}>Edit</button>
                       <button className="btn btn-quiet btn-sm" onClick={() => resetPassword(m)}>
                         Reset password

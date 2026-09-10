@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../../api/client'
+import { phoneError } from '../../api/validators'
 import { useToast } from '../../context/ToastContext'
 import { useDialog } from '../../components/Dialog'
 import Avatar from '../../components/Avatar'
@@ -14,6 +15,10 @@ export default function Register() {
   const [mentors, setMentors] = useState([])
   const [track, setTrack] = useState('')
   const [q, setQ] = useState('')
+  /* the Mentors screen links in here with ?mentorId=, so clicking a mentor's name shows
+     their learners instead of leaving you to scan the whole register by eye */
+  const [params, setParams] = useSearchParams()
+  const mentorFilter = params.get('mentorId') || ''
   const [enrol, setEnrol] = useState({ fullName: '', email: '', phone: '', whatsapp: '', bundleId: '', trackType: 'PREMIUM', batchId: '', mentorId: '', joinedOn: new Date().toISOString().slice(0, 10) })
   const [showEnrol, setShowEnrol] = useState(false)
   const [courses, setCourses] = useState([])
@@ -70,11 +75,12 @@ export default function Register() {
   /* a failed load used to leave rows null, which is the skeleton, which is a page that
      never finishes loading and never says why */
   const load = async () => {
-    const params = new URLSearchParams()
-    if (track) params.set('trackType', track)
-    if (q) params.set('q', q)
+    const query = new URLSearchParams()
+    if (track) query.set('trackType', track)
+    if (q) query.set('q', q)
+    if (mentorFilter) query.set('mentorId', mentorFilter)
     try {
-      setRows(await api.get(`/admin/register?${params}`))
+      setRows(await api.get(`/admin/register?${query}`))
       setFailed(null)
     } catch (e) {
       setRows([])
@@ -82,7 +88,7 @@ export default function Register() {
     }
   }
 
-  useEffect(() => { load() }, [track, q])
+  useEffect(() => { load() }, [track, q, mentorFilter])
   useEffect(() => {
     /* /super/people is super admin only, so an admin got a 403 here and an empty
        mentor dropdown on the page whose job is assigning mentors */
@@ -175,6 +181,25 @@ export default function Register() {
 
   const set = (k) => (e) => setEnrol((d) => ({ ...d, [k]: e.target.value }))
 
+  /*
+   * What stops the Create button.
+   *
+   * A batch learner could be created with the batch box empty, which fell through to the
+   * automatic Tuesday placement and dropped them into whichever cohort happened to be
+   * running, with that cohort's mentor. That rule is right for the sheet import, where
+   * nobody is watching; here somebody is on the form with the batch in front of them and
+   * an empty box is a slip rather than an instruction.
+   *
+   * A number is required because credentials go out by mail and every follow up after
+   * that happens on WhatsApp. An account with neither is one nobody can reach.
+   */
+  const enrolPhoneProblem = phoneError(enrol.phone)
+  const enrolWhatsappProblem = phoneError(enrol.whatsapp)
+  const noContact = !enrol.phone.trim() && !enrol.whatsapp.trim()
+  const noBatch = enrol.trackType === 'BATCH' && !enrol.batchId
+  const enrolReady = enrol.email && enrol.fullName && enrol.bundleId
+    && !noBatch && !noContact && !enrolPhoneProblem && !enrolWhatsappProblem
+
   return (
     <Page
       title="All learners"
@@ -264,12 +289,24 @@ export default function Register() {
             </div>
             <div className="col-md-2">
               <label className="form-label" htmlFor="en-phone">Phone</label>
-              <input id="en-phone" className="form-control" value={enrol.phone} onChange={set('phone')} />
+              <input id="en-phone"
+                className={`form-control ${enrolPhoneProblem ? 'is-invalid' : ''}`}
+                inputMode="tel" value={enrol.phone} onChange={set('phone')} />
+              {enrolPhoneProblem && <div className="invalid-feedback">{enrolPhoneProblem}</div>}
             </div>
             <div className="col-md-2">
               <label className="form-label" htmlFor="en-wa">WhatsApp</label>
-              <input id="en-wa" className="form-control" value={enrol.whatsapp}
+              <input id="en-wa"
+                className={`form-control ${enrolWhatsappProblem ? 'is-invalid' : ''}`}
+                inputMode="tel" value={enrol.whatsapp}
                 onChange={set('whatsapp')} placeholder="If different" />
+              {enrolWhatsappProblem && <div className="invalid-feedback">{enrolWhatsappProblem}</div>}
+              {noContact && !enrolPhoneProblem && (
+                <div className="small mt-1" style={{ color: 'var(--warn)' }}>
+                  One of the two is needed. The login goes out by mail and everything after
+                  it happens on WhatsApp.
+                </div>
+              )}
             </div>
 
             <div className="col-md-4">
@@ -298,19 +335,23 @@ export default function Register() {
               </select>
             </div>
 
-            {/* a batch learner without a batch is placed by the Tuesday rule, which is
-                usually what you want; a premium learner has no batch at all */}
+            {/* the batch is chosen here, never guessed. A premium learner has no batch. */}
             {enrol.trackType === 'BATCH' && (
               <div className="col-md-3">
                 <label className="form-label" htmlFor="en-batch">Batch</label>
-                <select id="en-batch" className="form-select" value={enrol.batchId} onChange={set('batchId')}>
-                  <option value="">Place them automatically</option>
-                  {batches.map((b) => (
-                    <option key={b.id} value={b.id}>{b.code} · starts {b.startDate}</option>
+                <select id="en-batch"
+                  className={`form-select ${noBatch ? 'is-invalid' : ''}`}
+                  value={enrol.batchId} onChange={set('batchId')}>
+                  <option value="">Choose a batch</option>
+                  {batches.filter((b) => b.open !== false).map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.code} · starts {b.startDate}{b.mentor ? ` · ${b.mentor}` : ''}
+                    </option>
                   ))}
                 </select>
                 <div className="small text-muted mt-1">
-                  Left blank, they join the batch that started on or before their joining date.
+                  They become this batch's mentor's learner. Only batches open to new
+                  joiners are listed.
                 </div>
               </div>
             )}
@@ -347,8 +388,7 @@ export default function Register() {
             )}
 
             <div className="col-12 d-flex gap-2 align-items-center flex-wrap">
-              <button className="btn btn-pib" onClick={submitEnrol}
-                disabled={!enrol.email || !enrol.fullName || !enrol.bundleId}>
+              <button className="btn btn-pib" onClick={submitEnrol} disabled={!enrolReady}>
                 Create account and mail the login
               </button>
               <button className="btn btn-quiet" onClick={() => setShowEnrol(false)}>Cancel</button>
@@ -396,8 +436,15 @@ export default function Register() {
               <option value="PREMIUM">Premium</option>
               <option value="BATCH">Batch</option>
             </select>
-            <input className="form-control" style={{ width: 220 }} placeholder="Search"
+            <input className="form-control" style={{ width: 220 }}
+              placeholder="Search by learner name or email"
               value={q} onChange={(e) => setQ(e.target.value)} />
+            {mentorFilter && (
+              <button className="btn btn-quiet" onClick={() => setParams({})}>
+                Showing {mentors.find((m) => m.id === mentorFilter)?.name || 'one mentor'}
+                &nbsp;&middot; clear
+              </button>
+            )}
           </>
         }
       >

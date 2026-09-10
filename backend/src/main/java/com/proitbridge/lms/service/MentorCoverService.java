@@ -30,17 +30,17 @@ public class MentorCoverService {
     private final MentorCoverRepository covers;
     private final LearnerRepository learners;
     private final UserRepository users;
-    private final MessageService messages;
+    private final MailService mail;
     private final ActivityService activity;
     private final MentorHierarchyService hierarchy;
     private final BatchRepository batches;
 
     public MentorCoverService(MentorCoverRepository covers, LearnerRepository learners,
-                              UserRepository users, MessageService messages,
+                              UserRepository users, MailService mail,
                               ActivityService activity, MentorHierarchyService hierarchy,
                               BatchRepository batches) {
         this.covers = covers; this.learners = learners; this.users = users;
-        this.messages = messages; this.activity = activity; this.hierarchy = hierarchy;
+        this.mail = mail; this.activity = activity; this.hierarchy = hierarchy;
         this.batches = batches;
     }
 
@@ -83,12 +83,25 @@ public class MentorCoverService {
         String covering = nameOf(coveringMentorId);
         long n = learners.findByMentorId(mentorId).size();
 
-        /* the covering mentor is told what they have picked up, because a queue that
-           silently doubles is worse than no cover at all */
-        messages.send(null, null, "ProITBridge",
+        /*
+         * The covering mentor is told what they have picked up, because a queue that
+         * silently doubles is worse than no cover at all.
+         *
+         * This went through the learner message service with a null learner id, which is
+         * a row addressed to nobody and a lookup that threw. It is a note to one member
+         * of staff, so it goes to them by mail and nothing about it pretends to be a
+         * learner record.
+         */
+        users.findById(coveringMentorId).ifPresent(u -> mail.send(u.getEmail(),
                 "You are covering for " + away,
-                covering + " is covering " + away + "'s " + n + " learners from " + from
-                        + " until " + until + ".", "ANNOUNCEMENT");
+                "Hello " + u.getFullName() + ",\n\n"
+                + "You are covering for " + away + " from " + from + " until " + until + ".\n"
+                + "That is " + n + " learner" + (n == 1 ? "" : "s") + " on top of your own, and "
+                + "you will see their queues and records for the duration.\n\n"
+                + "Reason given: " + reason + "\n\n"
+                + "Nothing is reassigned. Their mentor stays their mentor, and everything you "
+                + "do is recorded under your own name.\n\n"
+                + "Team ProITBridge", "ANNOUNCEMENT"));
 
         activity.log(null, actorEmail, "ARRANGE_COVER", "mentor",
                 covering + " covering " + away + " (" + from + " to " + until + "): " + reason);

@@ -47,6 +47,16 @@ public class MessageService {
         m.setKind(kind == null ? "MESSAGE" : kind);
         messages.save(m);
 
+        /*
+         * A note not addressed to a learner is a legitimate thing to write: an org wide
+         * announcement, or a record of something arranged between staff. Passing that
+         * null straight into findById threw "The given id must not be null" from the
+         * driver, and because the row had already been saved by then the caller's own
+         * work was committed while the caller saw a five hundred. The mentor cover screen
+         * was reporting an argument error over a cover it had successfully arranged.
+         */
+        if (learnerId == null || learnerId.isBlank()) return m;
+
         learners.findById(learnerId)
                 .flatMap(l -> users.findById(l.getUserId()))
                 .ifPresent(u -> mail.send(u.getEmail(), subject,

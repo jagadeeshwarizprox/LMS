@@ -161,6 +161,28 @@ const ROLE_LABEL = {
   LEARNER: 'Learner', MENTOR: 'Mentor', ADMIN: 'Admin', SUPER_ADMIN: 'Super Admin'
 }
 
+/**
+ * Which menu entry a detail page belongs under.
+ *
+ * NavLink marks itself active on a prefix, so /super/courses/<id> lights up Courses on its
+ * own. The chapter and learner record screens are the exceptions: they sit at their own top
+ * level path with no menu entry above them, so opening one left the whole menu unlit and
+ * nothing on screen said which section you were in. Editing a chapter test is exactly where
+ * somebody is most likely to lose their place, so it is the one that mattered most.
+ */
+const DETAIL_PARENTS = [
+  ['/super/chapters/', '/super/modules'],
+  ['/super/modules/', '/super/modules'],
+  ['/super/courses/', '/super/courses'],
+  ['/mentor/learners/', '/mentor/learners'],
+  ['/learn/chapter', '/learn']
+]
+
+function parentOf(pathname) {
+  const hit = DETAIL_PARENTS.find(([prefix]) => pathname.startsWith(prefix))
+  return hit ? hit[1] : null
+}
+
 /** The topbar says where you are, so the page header does not have to. */
 function crumbFor(pathname, role) {
   for (const [section, links] of NAV[role] || []) {
@@ -208,6 +230,9 @@ export default function AppShell({ children }) {
   const [menu, setMenu] = useState(false)
   const [scrolled, setScrolled] = useState(false)
 
+  /* declared before the pill effect below, which depends on it */
+  const detailParent = parentOf(location.pathname)
+
   const navWrap = useRef(null)
   const account = useRef(null)
   const [pill, setPill] = useState({ top: 0, height: 36, shown: false })
@@ -218,7 +243,7 @@ export default function AppShell({ children }) {
     const el = navWrap.current?.querySelector('.nav-link.active')
     if (!el) { setPill((p) => ({ ...p, shown: false })); return }
     setPill({ top: el.offsetTop, height: el.offsetHeight, shown: true })
-  }, [location.pathname, user?.role, rail])
+  }, [location.pathname, user?.role, rail, detailParent])
 
   /* the topbar gains a shadow only once there is something scrolled under it */
   useEffect(() => {
@@ -286,7 +311,8 @@ export default function AppShell({ children }) {
                     key={to + text}
                     to={to}
                     end={['/learn', '/mentor', '/admin', '/super'].includes(to)}
-                    className="nav-link"
+                    className={({ isActive }) =>
+                      `nav-link ${isActive || detailParent === to ? 'active' : ''}`}
                     title={rail ? text : undefined}
                   >
                     <Icon name={icon} size={17} />

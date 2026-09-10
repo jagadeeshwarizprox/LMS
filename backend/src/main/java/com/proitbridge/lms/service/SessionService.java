@@ -63,11 +63,29 @@ public class SessionService {
         }
         registerDevice(user, deviceId, label, ip);
 
-        // one at a time: the previous session is ended, not merely ignored
-        for (ActiveSession old : sessions.findByUserIdAndCurrentTrue(user.getId())) {
-            old.setCurrent(false);
-            old.setEndedReason("REPLACED");
-            sessions.save(old);
+        /*
+         * One session at a time, for learners.
+         *
+         * The rule exists to stop one paid account being passed around, and for a learner
+         * that is exactly right. It was being applied to staff as well, and staff work
+         * from more than one place at once: an office machine with the register open and a
+         * laptop in a session is an ordinary Tuesday, not account sharing. Two people on
+         * one super admin account knocked each other out every few minutes and it read as
+         * the product logging them out at random.
+         *
+         * Staff now keep their sessions unless an admin turns this on, which is a real
+         * choice for an organisation that would rather everyone had their own account and
+         * wants the sharing to be obvious. The device limit still applies to everybody, so
+         * an account cannot quietly spread across a dozen machines either way.
+         */
+        boolean oneAtATime = user.getRole() == User.Role.LEARNER
+                || settings.getBool("access.singleSession.staff", false);
+        if (oneAtATime) {
+            for (ActiveSession old : sessions.findByUserIdAndCurrentTrue(user.getId())) {
+                old.setCurrent(false);
+                old.setEndedReason("REPLACED");
+                sessions.save(old);
+            }
         }
 
         ActiveSession s = new ActiveSession();

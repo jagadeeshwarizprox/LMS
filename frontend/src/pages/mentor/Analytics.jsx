@@ -62,10 +62,17 @@ export default function Analytics() {
     if (only === 'RISK') r = r.filter((x) => x.atRisk)
     if (only === 'PREMIUM') r = r.filter((x) => x.trackType === 'PREMIUM')
     if (only === 'BATCH') r = r.filter((x) => x.trackType === 'BATCH')
+    /*
+     * The box searches the learner, and only the learner.
+     *
+     * It used to match on the batch, the mentor and the course as well, so typing a
+     * learner's name could return a mentor's entire caseload because that mentor's name
+     * happened to contain it. The columns are all sortable and the rollups above group by
+     * batch, mentor and course already, so nothing is lost by this box meaning one thing.
+     */
     if (q.trim()) {
       const needle = q.trim().toLowerCase()
-      r = r.filter((x) => [x.name, x.batch, x.mentor, x.course]
-        .some((v) => String(v || '').toLowerCase().includes(needle)))
+      r = r.filter((x) => String(x.name || '').toLowerCase().includes(needle))
     }
     return [...r].sort((a, b) => {
       if (sort === 'name') return String(a.name).localeCompare(String(b.name))

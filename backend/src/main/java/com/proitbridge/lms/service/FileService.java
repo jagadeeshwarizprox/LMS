@@ -45,6 +45,12 @@ public class FileService {
             "go", "rb", "php", "sh", "css", "scala", "m", "jl",
             // slides
             "ppt", "pptx", "odp",
+            /*
+             * Business intelligence. A Power BI or Tableau workbook is the deliverable on
+             * half the tasks this product sets, and the list refused all of them: a learner
+             * finishing a dashboard exercise had nothing they were allowed to hand in.
+             */
+            "pbix", "pbit", "twb", "twbx", "qvf",
             // images
             "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tif", "tiff",
             // archives

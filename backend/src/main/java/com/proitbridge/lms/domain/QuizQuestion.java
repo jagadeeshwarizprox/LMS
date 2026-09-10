@@ -12,6 +12,15 @@ public class QuizQuestion {
     private int correctIndex;
     private String explanation;
     private boolean draft;            // model drafted, not yet reviewed
+    /*
+     * What this question is worth.
+     *
+     * Every question counted the same, so a one line recall check and the question the
+     * whole chapter builds towards were worth an identical share of the pass mark. One
+     * is the default, which is exactly the old behaviour: a test nobody weights scores
+     * the same as it always did.
+     */
+    private int marks = 1;
 
     public String getChapterId() { return chapterId; }
     public void setChapterId(String chapterId) { this.chapterId = chapterId; }
@@ -23,6 +32,8 @@ public class QuizQuestion {
     public void setCorrectIndex(int correctIndex) { this.correctIndex = correctIndex; }
     public String getExplanation() { return explanation; }
     public void setExplanation(String explanation) { this.explanation = explanation; }
+    public int getMarks() { return marks <= 0 ? 1 : marks; }
+    public void setMarks(int marks) { this.marks = marks <= 0 ? 1 : marks; }
     public boolean isDraft() { return draft; }
     public void setDraft(boolean draft) { this.draft = draft; }
 

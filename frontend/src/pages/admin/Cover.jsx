@@ -40,13 +40,28 @@ export default function Cover() {
           hint: 'They keep their own learners as well, so check the load.' },
         { name: 'from', label: 'From', type: 'date', required: true },
         { name: 'until', label: 'Until', type: 'date', required: true },
-        { name: 'reason', label: 'Reason', required: true, placeholder: 'Leave, travel, illness' }
+        /* the box took random characters and numbers, and a reason nobody can group by
+           is a reason nobody reads. The list is the set of things that actually happen. */
+        { name: 'reason', label: 'Reason', required: true,
+          options: [
+            { value: 'Planned leave', label: 'Planned leave' },
+            { value: 'Sick leave', label: 'Sick leave' },
+            { value: 'Travel', label: 'Travel' },
+            { value: 'Working from home', label: 'Working from home' },
+            { value: 'Training', label: 'Training or conference' },
+            { value: 'Other', label: 'Something else' }
+          ],
+          placeholder: 'Choose one' },
+        { name: 'note', label: 'Anything to add', placeholder: 'Optional, kept on the record' }
       ],
       confirmLabel: 'Arrange cover'
     })
     if (!r) return
     try {
-      await api.post('/admin/cover', r)
+      await api.post('/admin/cover', {
+        ...r,
+        reason: r.note && r.note.trim() ? `${r.reason} - ${r.note.trim()}` : r.reason
+      })
       toast.push('Cover arranged. It ends on its own date.')
       await load()
     } catch (e) { toast.push(e.message, 'bad') }

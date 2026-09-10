@@ -184,7 +184,15 @@ export default function LearnerHome() {
       )}
 
       <Grid cols={3} style={{ marginBottom: 18 }}>
-        <Stat value={`${stats.percent}%`} label="Course watched" icon="recordings" />
+        {/* a learner with no course has no denominator, and showing them nought per cent
+            told them they had not started when in fact nothing had been given to them */}
+        <Stat
+          value={stats.hasCourse ? `${stats.percent}%` : '\u2014'}
+          label={stats.hasCourse
+            ? `Course watched · ${stats.watchedTopics} of ${stats.totalTopics} topics`
+            : 'No course assigned yet'}
+          icon="recordings"
+        />
         <Stat value={stats.avgQuiz} label="Average test score" icon="projects" />
         <Stat value={stats.tasksApproved} label="Tasks approved" icon="check" />
         <Stat value={stats.projectsApproved} label="Projects approved" icon="library" />
@@ -192,7 +200,8 @@ export default function LearnerHome() {
 
       {roadmap.length === 0 ? (
         <Empty title="No course assigned yet">
-          Your track has not been set on your record. The admin team can fix that.
+          Either your track has not been set on your record, or the course you are on has
+          not been published yet. The admin team can sort out both.
         </Empty>
       ) : (
         roadmap.map((m, idx) => (

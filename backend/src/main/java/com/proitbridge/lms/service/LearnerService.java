@@ -166,8 +166,26 @@ public class LearnerService {
      * but nothing is playable until every gate is cleared. Modules run in bundle order,
      * In the order the course sets, and each opens when the one before it is finished.
      */
+    /**
+     * The learner's course, and only if it has been published.
+     *
+     * {@code Bundle.published} was written by the publish button and shown on the super
+     * admin list, and then nothing anywhere read it. A course still being authored was
+     * served to learners in full: half written chapters, topics with no video, and quiz
+     * questions the model had drafted and nobody had reviewed. Publishing meant nothing,
+     * which is worse than having no publish step at all, because the person pressing the
+     * button believed it was doing something.
+     *
+     * Every path a learner reaches content through goes past here, so there is one answer
+     * rather than three that drift.
+     */
+    private Bundle publishedCourseFor(Learner l) {
+        if (l == null || l.getBundleId() == null) return null;
+        return bundles.findById(l.getBundleId()).filter(Bundle::isPublished).orElse(null);
+    }
+
     public List<Map<String, Object>> roadmap(Learner l) {
-        Bundle bundle = l.getBundleId() == null ? null : bundles.findById(l.getBundleId()).orElse(null);
+        Bundle bundle = publishedCourseFor(l);
         if (bundle == null) return List.of();
         Map<String, Progress> byChapter = progress.findByLearnerId(l.getId()).stream()
                 .collect(Collectors.toMap(Progress::getChapterId, p -> p, (a, b) -> a));
@@ -283,11 +301,54 @@ public class LearnerService {
         return true;
     }
 
+    /**
+     * Where a learner has got to, as a percentage.
+     *
+     * This used to count whole chapters. A chapter is marked watched only when every one
+     * of its topics is done, so a learner who sat through a full video in a five topic
+     * chapter finished it, went back to My roadmap, and read nought per cent. They had
+     * done real work and the product told them they had done none, which is the fastest
+     * way to lose somebody in their first week.
+     *
+     * Topics are the unit a learner actually completes, so they are the unit counted.
+     * The chapter flag still exists and still means all of it: nothing that gates on
+     * completion has moved.
+     *
+     * A learner with no course, or one whose course has not been published, has no
+     * denominator. That is reported as null rather than as zero, because "we have not
+     * given you anything yet" and "you have not started" are different problems and only
+     * one of them is the learner's.
+     */
     public Map<String, Object> stats(Learner l) {
         List<Progress> ps = progress.findByLearnerId(l.getId());
-        Bundle bundle = l.getBundleId() == null ? null : bundles.findById(l.getBundleId()).orElse(null);
-        long totalChapters = bundle == null ? 0
-                : chapters.findByModuleIdIn(bundle.getModuleIds()).size();
+        Bundle bundle = publishedCourseFor(l);
+
+        List<Chapter> courseChapters = bundle == null ? List.of()
+                : chapters.findByModuleIdIn(bundle.getModuleIds());
+        long totalChapters = courseChapters.size();
+
+        Map<String, Long> topicsPerChapter = new LinkedHashMap<>();
+        if (!courseChapters.isEmpty()) {
+            Set<String> chapterIds = courseChapters.stream()
+                    .map(Chapter::getId).collect(Collectors.toSet());
+            for (Topic t : topics.findByChapterIdIn(chapterIds)) {
+                if (!t.isActive()) continue;
+                topicsPerChapter.merge(t.getChapterId(), 1L, Long::sum);
+            }
+        }
+        long totalTopics = topicsPerChapter.values().stream().mapToLong(Long::longValue).sum();
+
+        Map<String, Progress> progressByChapter = ps.stream()
+                .collect(Collectors.toMap(Progress::getChapterId, p -> p, (a, b) -> a));
+        long watchedTopics = 0;
+        for (var e : topicsPerChapter.entrySet()) {
+            Progress p = progressByChapter.get(e.getKey());
+            if (p == null || p.getWatchedTopicIds() == null) continue;
+            /* a topic archived after somebody watched it stays in their set, so the
+               count is capped at what the chapter still holds rather than going over */
+            watchedTopics += Math.min(e.getValue(), p.getWatchedTopicIds().size());
+        }
+
         long watched = ps.stream().filter(Progress::isWatched).count();
         double avgQuiz = ps.stream().filter(p -> p.getQuizScore() != null)
                 .mapToDouble(Progress::getQuizScore).average().orElse(0);
@@ -304,7 +365,11 @@ public class LearnerService {
          * endpoint 500s, so a mentor saw none of their learners rather than some of them.
          * The same cast sits behind the leaderboard and the rank card.
          */
-        m.put("percent", totalChapters == 0 ? 0 : (int) Math.round(watched * 100.0 / totalChapters));
+        m.put("totalTopics", totalTopics);
+        m.put("watchedTopics", watchedTopics);
+        m.put("hasCourse", bundle != null && totalTopics > 0);
+        m.put("percent", totalTopics == 0 ? 0
+                : (int) Math.round(watchedTopics * 100.0 / totalTopics));
         m.put("avgQuiz", (int) Math.round(avgQuiz));
         m.put("tasksApproved", tasksApproved);
         m.put("projectsApproved", projects.countByLearnerIdAndStatus(l.getId(), "APPROVED"));
@@ -406,9 +471,8 @@ public class LearnerService {
         if (!l.modulesUnlocked(inductionCounts(l))) return false;
         Chapter c = chapters.findById(chapterId).orElse(null);
         if (c == null || c.getModuleId() == null) return false;
-        return bundles.findById(l.getBundleId() == null ? "" : l.getBundleId())
-                .map(b -> b.getModuleIds() != null && b.getModuleIds().contains(c.getModuleId()))
-                .orElse(false);
+        Bundle b = publishedCourseFor(l);
+        return b != null && b.getModuleIds() != null && b.getModuleIds().contains(c.getModuleId());
     }
 
     public Map<String, Object> chapter(String userId, String chapterId) {
@@ -652,17 +716,25 @@ public class LearnerService {
                     "You have already passed this test.");
         }
 
-        int correct = 0;
+        /*
+         * Scored on marks rather than on a count of questions. A test where nobody has
+         * set a weight has every question on the default of one, so this is arithmetically
+         * the old behaviour and no existing chapter's pass mark shifts under it.
+         */
+        int earned = 0;
+        int available = 0;
         List<Map<String, Object>> review = new ArrayList<>();
         for (QuizQuestion q : qs) {
             Integer given = answers.get(q.getId());
             boolean ok = given != null && given == q.getCorrectIndex();
-            if (ok) correct++;
+            available += q.getMarks();
+            if (ok) earned += q.getMarks();
             review.add(Map.of("id", q.getId(), "correctIndex", q.getCorrectIndex(),
                     "given", given == null ? -1 : given, "correct", ok,
+                    "marks", q.getMarks(),
                     "explanation", q.getExplanation() == null ? "" : q.getExplanation()));
         }
-        double score = Math.round(correct * 100.0 / qs.size());
+        double score = available == 0 ? 0 : Math.round(earned * 100.0 / available);
 
         int attemptNo = already.size() + 1;
         QuizAttempt a = new QuizAttempt();

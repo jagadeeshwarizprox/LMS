@@ -528,36 +528,17 @@ a.asset b, a.asset span { text-decoration: none; }
 .who-cell .who-sub { font-size: .74rem; color: var(--ink-60); }
 
 /* ---------- shell ---------- */
-.sidebar {
-  width: var(--sidebar-w); flex: 0 0 var(--sidebar-w);
-  background: linear-gradient(180deg, #01153A, #041B47 58%, #01122F);
-  color: #B9C7DE; padding: 18px 14px 22px;
-  box-shadow: inset -1px 0 rgba(255, 255, 255, .06);
-}
-.sidebar-brand {
-  display: flex; align-items: center; gap: 10px; padding: 4px 8px 15px;
-  border-bottom: 1px solid rgba(255, 255, 255, .08); margin-bottom: 6px;
-}
-.nav-section {
-  font-family: 'Space Mono', monospace; font-size: .57rem; letter-spacing: .2em;
-  text-transform: uppercase; color: rgba(185, 199, 222, .38); margin: 18px 11px 6px;
-}
-.sidebar .nav-link {
-  position: relative; z-index: 1; display: flex; align-items: center; gap: 10px;
-  width: 100%; background: none; border: none; color: #B9C7DE; border-radius: var(--r);
-  padding: 8px 11px; font-size: .87rem; text-align: left; height: 36px;
-  transition: background .15s, color .15s;
-}
-.sidebar .nav-link:hover { background: rgba(255, 255, 255, .07); color: #fff; }
-.sidebar .nav-link.active { color: #fff; background: transparent; }
-.sidebar .nav-link svg { flex: 0 0 auto; opacity: .7; transition: opacity .2s, transform .2s var(--ease); }
-.sidebar .nav-link:hover svg { opacity: 1; transform: translateX(1px); }
-.sidebar .nav-link.active svg { opacity: 1; color: var(--blue-400); }
-.nav-pill {
-  border-radius: var(--r);
-  background: linear-gradient(90deg, rgba(0, 176, 240, .20), rgba(0, 32, 96, .55) 42%);
-  box-shadow: inset 2px 0 0 var(--blue-500), inset 0 0 0 1px rgba(255, 255, 255, .07);
-}
+/*
+ * The sidebar used to be written out again here, in full: the panel, the brand, the
+ * section headings, the links, their hover and active states, and the sliding pill. Every
+ * one of them already exists in theme.css, and this file loads second, so the two
+ * definitions overwrote each other property by property and neither file was the answer to
+ * "why does the menu look like that". Changing the active state in the obvious place did
+ * nothing, which is most of the reason it went unfixed for so long.
+ *
+ * All of it now lives in theme.css and nowhere else. What is left below is the parts this
+ * file genuinely owns.
+ */
 .rail-count {
   margin-left: auto; font-family: 'Space Mono', monospace; font-size: .66rem;
   background: var(--blue-500); color: var(--navy-900); border-radius: 20px; padding: 1px 7px;

@@ -153,6 +153,15 @@ public class ProvisioningService {
             if (batch != null) {
                 l.setBatchId(batch.getId());
                 l.setWhatsappGroupLink(batch.getWhatsappLink());
+                /*
+                 * A batch has one mentor and every learner placed in it is theirs. This
+                 * was never set here, so an account created by the sheet or the register
+                 * carried a batch and no mentor: the mentor's learner count read zero,
+                 * their roster was empty, the analytics mentor rollup collapsed into one
+                 * Unassigned row, and a one to one booking failed its own mentor check.
+                 * One line, because the batch already knows the answer.
+                 */
+                l.setMentorId(batch.getMentorId());
             }
         }
         learners.save(l);

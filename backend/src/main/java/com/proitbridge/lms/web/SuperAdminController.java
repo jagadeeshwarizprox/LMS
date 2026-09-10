@@ -3,6 +3,7 @@ package com.proitbridge.lms.web;
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.security.CurrentUser;
 import com.proitbridge.lms.service.ActivityService;
+import com.proitbridge.lms.service.Validate;
 import com.proitbridge.lms.service.CatalogueService;
 import com.proitbridge.lms.service.FeatureService;
 import com.proitbridge.lms.service.SuperAdminService;
@@ -75,7 +76,8 @@ public class SuperAdminController {
         u.setId((String) body.get("id"));
         u.setEmail((String) body.get("email"));
         u.setFullName((String) body.get("fullName"));
-        u.setPhone((String) body.get("phone"));
+        u.setPhone(Validate.phone((String) body.get("phone"), "Phone number"));
+        u.setWhatsapp(Validate.phone((String) body.get("whatsapp"), "WhatsApp number"));
         /*
          * A second super admin is not created from inside the product.
          *

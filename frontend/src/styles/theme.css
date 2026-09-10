@@ -362,7 +362,20 @@ body.dark .spinner-border { color: var(--blue-400); }
 }
 
 .sidebar .nav-link:hover { background: rgba(255, 255, 255, .07); color: #fff; }
-.sidebar .nav-link.active { background: transparent; color: #fff; }
+/*
+ * The current page has to look current.
+ *
+ * The active state was a transparent background and white text, and the base link colour
+ * is already close to white, so the only difference between "you are here" and "your
+ * mouse is here" was that hovering looked stronger. On a detail page, where no menu entry
+ * matches at all, there was nothing. The sliding pill sits behind this rule and does the
+ * gradient; what was missing was any weight on the row itself.
+ */
+.sidebar .nav-link.active {
+  background: transparent;
+  color: #fff;
+  font-weight: 600;
+}
 
 .sidebar .nav-link .badge-count {
   margin-left: auto;
@@ -1598,6 +1611,11 @@ body.dark .topbar.lifted { box-shadow: 0 1px 0 var(--line), 0 8px 24px rgba(0, 0
 
 .dlg {
   width: min(480px, 100%);
+  /* a tall dialog scrolls its own fields rather than growing past the window and
+     taking the confirm button with it */
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -1605,6 +1623,7 @@ body.dark .topbar.lifted { box-shadow: 0 1px 0 var(--line), 0 8px 24px rgba(0, 0
   padding: 22px;
   animation: dlg-in .26s var(--ease);
 }
+.dlg-scroll { overflow-y: auto; flex: 1 1 auto; margin: 0 -22px; padding: 0 22px; }
 @keyframes dlg-in {
   from { opacity: 0; transform: translateY(12px) scale(.985); }
   to { opacity: 1; transform: none; }
@@ -1638,7 +1657,12 @@ body.dark .topbar.lifted { box-shadow: 0 1px 0 var(--line), 0 8px 24px rgba(0, 0
   font-weight: 400;
 }
 .dlg-hint { font-size: .76rem; color: var(--ink-30); margin-top: 5px; }
-.dlg-foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+.dlg-foot {
+  display: flex; gap: 8px; justify-content: flex-end;
+  flex: 0 0 auto; margin: 0 -22px; padding: 18px 22px 0;
+  border-top: 1px solid var(--line);
+}
+.dlg-problem { font-size: .76rem; color: var(--stop); margin-top: 5px; }
 
 .btn-danger {
   background: linear-gradient(180deg, #E24437, #CB2A1E);

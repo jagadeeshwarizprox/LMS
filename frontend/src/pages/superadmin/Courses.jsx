@@ -75,6 +75,58 @@ export default function Courses() {
     } catch (e) { toast.push(e.message, 'bad') }
   }
 
+  /*
+   * Renaming and deleting a course.
+   *
+   * Both routes have existed on the server the whole time and this screen never called
+   * either of them, so a course created with a typo in its name kept the typo for ever
+   * and a course made by mistake stayed in the catalogue and in every dropdown built
+   * from it. The only way out was the database.
+   */
+  const rename = async (b) => {
+    const r = await ask({
+      title: `Edit ${b.name}`,
+      body: 'The modules in it are chosen on the course itself. This is the card.',
+      fields: [
+        { name: 'name', label: 'Name', value: b.name, required: true },
+        { name: 'tag', label: 'Label on the card', value: b.tag || '' },
+        { name: 'description', label: 'One line', value: b.description || '' },
+        {
+          name: 'color', label: 'Cover colour', value: b.color || COLORS[0],
+          options: COLORS.map((c) => ({ value: c, label: c }))
+        }
+      ],
+      confirmLabel: 'Save'
+    })
+    if (!r) return
+    try {
+      await api.post('/super/catalogue/bundles', { id: b.id, moduleIds: b.moduleIds, ...r })
+      toast.push('Saved.')
+      await load()
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
+
+  const remove = async (b) => {
+    const ok = await ask({
+      title: `Delete ${b.name}?`,
+      body: b.learners > 0
+        ? `${b.learners} learner${b.learners === 1 ? ' is' : 's are'} on this course right now. `
+          + 'Deleting it takes the course away from them and leaves them with an empty '
+          + 'roadmap. Move them to another course first.'
+        : 'The modules in it are not touched. They belong to the catalogue, not to this '
+          + 'course, and stay available to bundle again.',
+      intent: 'danger',
+      confirmWord: b.learners > 0 ? b.name : undefined,
+      confirmLabel: 'Delete the course'
+    })
+    if (!ok) return
+    try {
+      await api.del(`/super/catalogue/bundles/${b.id}`)
+      toast.push(`${b.name} deleted.`)
+      await load()
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
+
   return (
     <Page
       title="Courses and pricing"
@@ -140,7 +192,9 @@ export default function Courses() {
                     </div>
                   </div>
                   <div className="acts">
-                    {b.published ? <Tag kind="ok">Live</Tag> : <Tag kind="wait">Draft</Tag>}
+                    {b.published
+                      ? <Tag kind="ok">Live</Tag>
+                      : <Tag kind="wait" title="Learners cannot see a draft course">Draft</Tag>}
                   </div>
                 </div>
 
@@ -162,6 +216,8 @@ export default function Courses() {
                     {b.readiness.length > 0 && (
                       <span className="tag tag-wait">{b.readiness.length} to finish</span>
                     )}
+                    <button className="btn btn-s" onClick={() => rename(b)}>Edit</button>
+                    <button className="btn btn-s btn-x" onClick={() => remove(b)}>Delete</button>
                     <button className="btn btn-s btn-pib" onClick={() => nav(`/super/courses/${b.id}`)}>
                       Open
                     </button>

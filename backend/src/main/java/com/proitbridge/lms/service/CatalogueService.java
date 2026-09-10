@@ -498,7 +498,16 @@ public class CatalogueService {
         if (body.getCorrectIndex() < 0 || body.getCorrectIndex() >= body.getOptions().size()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Mark which option is correct.");
         }
-        body.setDraft(false);            // written by a person, so it is already reviewed
+        /*
+         * A question with no explanation saved perfectly happily, and the learner then
+         * got their answer marked wrong with nothing said about why. The explanation is
+         * the only teaching the test does, so it is not optional.
+         */
+        if (body.getExplanation() == null || body.getExplanation().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Say why the right answer is right. The learner sees it after they answer.");
+        }
+        body.setDraft(false);            // written or reviewed by a person, so it is not a draft
         QuizQuestion saved = questions.save(body);
         activity.log(null, actorEmail, "SAVE_QUESTION", "chapter", body.getChapterId());
         return saved;
@@ -515,10 +524,38 @@ public class CatalogueService {
         if (body.getName() == null || body.getName().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "A course needs a name.");
         }
-        if (body.getModuleIds() == null) body.setModuleIds(new ArrayList<>());
-        if (body.getAccess() == null) body.setAccess(new Bundle.Access());
         boolean isNew = body.getId() == null;
-        Bundle saved = bundles.save(body);
+
+        /*
+         * An edit changes what was sent and leaves the rest alone.
+         *
+         * This used to save the posted object straight over the stored one, which is fine
+         * for a create and destructive for anything else: correcting a typo in the name
+         * from a screen that does not carry price, access, the cover image or the publish
+         * flag would have blanked all four. Nothing called it with an id until now, so
+         * nobody had found out. Merging is the behaviour the method name has always
+         * implied.
+         */
+        Bundle target = body;
+        if (!isNew) {
+            Bundle current = bundle(body.getId());
+            current.setName(body.getName());
+            if (body.getDescription() != null) current.setDescription(body.getDescription());
+            if (body.getTag() != null) current.setTag(body.getTag());
+            if (body.getColor() != null) current.setColor(body.getColor());
+            /* price is a primitive, so "not sent" and "zero" look the same on the wire.
+               A course is never deliberately set to zero from this screen, so a zero is
+               read as absent and the stored price is kept. */
+            if (body.getPrice() > 0) current.setPrice(body.getPrice());
+            if (body.getImageFileId() != null) current.setImageFileId(body.getImageFileId());
+            if (body.getModuleIds() != null) current.setModuleIds(body.getModuleIds());
+            if (body.getAccess() != null) current.setAccess(body.getAccess());
+            target = current;
+        }
+
+        if (target.getModuleIds() == null) target.setModuleIds(new ArrayList<>());
+        if (target.getAccess() == null) target.setAccess(new Bundle.Access());
+        Bundle saved = bundles.save(target);
         activity.log(null, actorEmail, isNew ? "CREATE_BUNDLE" : "UPDATE_BUNDLE",
                 "bundle", saved.getName());
         return saved;

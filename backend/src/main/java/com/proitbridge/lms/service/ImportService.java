@@ -45,7 +45,7 @@ public class ImportService {
     private static final List<String> BATCH_HINTS = List.of("group", "batch");
 
     public record ImportSummary(int created, int upgraded, int existing, int skipped,
-                                List<ProvisioningService.Outcome> rows) {}
+                                List<ProvisioningService.Outcome> rows, List<String> sheets) {}
 
     public ImportSummary importWorkbook(MultipartFile file, boolean dispatchMail, String actorEmail)
             throws Exception {
@@ -67,17 +67,49 @@ public class ImportService {
         }
     }
 
+    /**
+     * Every sheet with an email column in it is read.
+     *
+     * The old rule was that a sheet had to be *named* premium or group or batch, and any
+     * other name was skipped in silence. A workbook whose tabs were called Sheet1, or
+     * Students, or September, imported nothing at all and reported four zeroes with no
+     * indication that the file had been ignored rather than found empty. Every column
+     * mapping underneath was working; the sheet never reached it.
+     *
+     * The name is still the best signal when it is there, so it is tried first. Failing
+     * that a track column on the row decides, and failing that the sheet is read as batch,
+     * which is the larger and less privileged of the two: an account created with too
+     * little is fixed by an upgrade, and provisioning already upgrades in place without
+     * duplicating anyone. What is never done again is dropping the rows and saying nothing.
+     *
+     * Each sheet reports what happened to it either way, so a zero is always explained.
+     */
     private ImportSummary read(InputStream in, boolean dispatchMail, String actorEmail,
                                boolean dryRun) throws Exception {
         try (Workbook wb = WorkbookFactory.create(in)) {
             List<ProvisioningService.Outcome> outcomes = new ArrayList<>();
+            List<String> notes = new ArrayList<>();
             for (int s = 0; s < wb.getNumberOfSheets(); s++) {
                 Sheet sheet = wb.getSheetAt(s);
-                Learner.TrackType track = trackFor(sheet.getSheetName());
-                if (track == null) continue;
-                outcomes.addAll(readSheet(sheet, track, dispatchMail, actorEmail, dryRun));
+                String name = sheet.getSheetName();
+
+                if (findHeader(sheet) == null) {
+                    notes.add(name + ": no email column, so nothing here is a learner.");
+                    continue;
+                }
+
+                Learner.TrackType named = trackFor(name);
+                List<ProvisioningService.Outcome> got =
+                        readSheet(sheet, named, dispatchMail, actorEmail, dryRun);
+                outcomes.addAll(got);
+
+                notes.add(name + ": " + got.size() + " row" + (got.size() == 1 ? "" : "s")
+                        + " read as " + (named == null
+                            ? "premium or batch per row, since the tab name does not say"
+                            : named.name().toLowerCase()) + ".");
             }
-            return summarise(outcomes);
+            if (notes.isEmpty()) notes.add("This workbook has no sheets in it.");
+            return summarise(outcomes, notes);
         }
     }
 
@@ -125,6 +157,20 @@ public class ImportService {
         return null;
     }
 
+    /**
+     * Which track a single row belongs to, when the tab name did not say.
+     *
+     * A column called track, type, plan or programme is read for the word premium or
+     * personalised. Nothing there means batch.
+     */
+    private Learner.TrackType trackForRow(Row row, Map<String, Integer> cols) {
+        String said = pick(row, cols, "track", "type", "plan", "programme", "program", "category");
+        if (said == null) return Learner.TrackType.BATCH;
+        String n = said.toLowerCase();
+        if (PREMIUM_HINTS.stream().anyMatch(n::contains)) return Learner.TrackType.PREMIUM;
+        return Learner.TrackType.BATCH;
+    }
+
     private List<ProvisioningService.Outcome> readSheet(Sheet sheet, Learner.TrackType track,
                                                         boolean dispatchMail, String actorEmail,
                                                         boolean dryRun) {
@@ -146,8 +192,8 @@ public class ImportService {
                     email,
                     pick(row, cols, "phone", "contact", "mobile", "contact number"),
                     pick(row, cols, "whatsapp", "whatsapp number"),
-                    pick(row, cols, "course", "track", "programme", "program", "bundle", "course opted"),
-                    track,
+                    pick(row, cols, "course", "bundle", "course opted", "programme", "program"),
+                    track == null ? trackForRow(row, cols) : track,
                     pick(row, cols, "batch", "batch no", "batch number", "batch code"),
                     date(row, cols, "date of joining", "joining date", "doj", "enrolled on"),
                     sheet.getSheetName() + "!" + (r + 1));
@@ -211,7 +257,7 @@ public class ImportService {
         };
     }
 
-    private ImportSummary summarise(List<ProvisioningService.Outcome> rows) {
+    private ImportSummary summarise(List<ProvisioningService.Outcome> rows, List<String> sheets) {
         int created = 0, upgraded = 0, existing = 0, skipped = 0;
         for (var o : rows) {
             switch (o.status()) {
@@ -221,6 +267,6 @@ public class ImportService {
                 default -> skipped++;
             }
         }
-        return new ImportSummary(created, upgraded, existing, skipped, rows);
+        return new ImportSummary(created, upgraded, existing, skipped, rows, sheets);
     }
 }

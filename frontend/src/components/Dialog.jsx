@@ -70,8 +70,16 @@ function DialogShell({ config, onClose }) {
   }, [onClose])
 
   const missing = fields.filter((f) => f.required && !String(values[f.name] || '').trim())
+  /*
+   * A field can carry its own rule. Phone and link boxes used to accept anything and the
+   * refusal arrived from the server after the dialog had already closed, which loses
+   * whatever else had been typed into it.
+   */
+  const problems = Object.fromEntries(fields
+    .map((f) => [f.name, f.validate ? f.validate(values[f.name]) : null])
+    .filter(([, msg]) => msg))
   const wordOk = !confirmWord || word.trim().toLowerCase() === confirmWord.toLowerCase()
-  const ready = missing.length === 0 && wordOk && !busy
+  const ready = missing.length === 0 && Object.keys(problems).length === 0 && wordOk && !busy
 
   const submit = (e) => {
     e?.preventDefault?.()
@@ -97,6 +105,16 @@ function DialogShell({ config, onClose }) {
           </button>
         </div>
 
+        {/*
+          * The fields scroll and the buttons do not.
+          *
+          * The panel had no height limit, so a dialog with seven fields in it grew past
+          * the bottom of the window and took the footer with it. The confirm button was
+          * still there and simply could not be reached or scrolled to, which is why
+          * writing a quiz question could only be finished by pressing return and looked
+          * from the outside like a screen with no save button on it.
+          */}
+        <div className="dlg-scroll">
         {body && <p className="dlg-body">{body}</p>}
 
         {fields.map((f) => (
@@ -128,13 +146,16 @@ function DialogShell({ config, onClose }) {
             ) : (
               <input
                 id={`dlg-${f.name}`}
-                className="form-control"
+                className={`form-control ${problems[f.name] ? 'is-invalid' : ''}`}
                 type={f.type || 'text'}
+                min={f.min}
+                max={f.max}
                 placeholder={f.placeholder}
                 value={values[f.name]}
                 onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
               />
             )}
+            {problems[f.name] && <div className="dlg-problem">{problems[f.name]}</div>}
             {f.hint && <div className="dlg-hint">{f.hint}</div>}
           </div>
         ))}
@@ -153,6 +174,7 @@ function DialogShell({ config, onClose }) {
             />
           </div>
         )}
+        </div>
 
         <div className="dlg-foot">
           <button type="button" className="btn btn-quiet" onClick={() => onClose(null)}>
