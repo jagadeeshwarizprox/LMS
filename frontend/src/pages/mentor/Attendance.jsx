@@ -11,6 +11,8 @@ const STATES = [['PRESENT', 'Here'], ['LATE', 'Late'], ['ABSENT', 'Away']]
 const KIND_LABEL = {
   GROUP_DOUBT: 'Group doubt clearing', DOUBT: 'Doubt clearing', PROJECT: 'Project session',
   LIVE: 'Live session', ONBOARDING: 'Onboarding call', INDUCTION: 'Induction',
+  INTERACTIVE: 'Interactive session', DEBATE: 'Debate session',
+  RECAP: 'Recap session', INDUSTRY: 'Industry expert session',
   MOCK: 'Mock interview'
 }
 

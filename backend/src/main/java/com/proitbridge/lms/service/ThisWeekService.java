@@ -164,6 +164,10 @@ public class ThisWeekService {
             case "DOUBT" -> "Doubt clearing";
             case "GROUP_DOUBT" -> "Group doubt clearing";
             case "LIVE" -> "Live session";
+            case "INTERACTIVE" -> "Interactive session";
+            case "DEBATE" -> "Debate session";
+            case "RECAP" -> "Recap session";
+            case "INDUSTRY" -> "Industry expert session";
             case "PROJECT" -> "Project session";
             case "MOCK" -> "Mock interview";
             default -> kind;

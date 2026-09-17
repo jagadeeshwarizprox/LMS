@@ -11,6 +11,15 @@ public class ResumeVersion {
     private int version = 1;
     private String filename;
     private String url;
+    /**
+     * An uploaded file, as an alternative to a link.
+     *
+     * A resume was a URL and nothing else, so handing one in meant putting it on Drive
+     * and getting the sharing right. Links to somebody's Drive also stop working, which
+     * is the worst way for a mentor to find out at review time. Either is accepted; one
+     * of the two has to be there.
+     */
+    private String fileId;
     private boolean reviewedByMentor;
     private Instant uploadedAt = Instant.now();
 
@@ -22,6 +31,8 @@ public class ResumeVersion {
     public void setFilename(String filename) { this.filename = filename; }
     public String getUrl() { return url; }
     public void setUrl(String url) { this.url = url; }
+    public String getFileId() { return fileId; }
+    public void setFileId(String fileId) { this.fileId = fileId; }
     public boolean isReviewedByMentor() { return reviewedByMentor; }
     public void setReviewedByMentor(boolean reviewedByMentor) { this.reviewedByMentor = reviewedByMentor; }
     public Instant getUploadedAt() { return uploadedAt; }

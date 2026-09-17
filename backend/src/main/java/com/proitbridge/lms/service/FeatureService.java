@@ -69,7 +69,7 @@ public class FeatureService {
      */
     public boolean sessionKindAllowed(Learner learner, String kind) {
         String key = switch (kind == null ? "" : kind) {
-            case "LIVE", "INTERACTIVE" -> "live_sessions";
+            case "LIVE", "INTERACTIVE", "DEBATE" -> "live_sessions";
             case "INDUSTRY" -> "industry_sessions";
             case "DOUBT" -> "doubt_clearing";
             case "GROUP_DOUBT" -> "group_doubt";

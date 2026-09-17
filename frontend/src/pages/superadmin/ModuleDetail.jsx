@@ -12,7 +12,7 @@ import { Card, Empty, Page, Stat, Tag } from '../../components/Ui'
  *
  * The accordion is the point. A chapter is only interesting for what is inside it, and
  * a list that makes you navigate away to find out has you clicking back and forth to
- * answer "which chapter is missing its topics".
+ * answer "which chapter is missing its topicsa".
  */
 export default function ModuleDetail() {
   const { id } = useParams()
@@ -102,6 +102,33 @@ export default function ModuleDetail() {
     run(() => api.del(`/super/catalogue/chapters/${c.id}`), 'Chapter deleted.')
   }
 
+  /**
+   * Releasing the module, and releasing one chapter at a time from the same list.
+   *
+   * A module used to arrive on the roadmap of every learner whose course contained it
+   * the moment it was created, half written. Releasing it with nothing released inside
+   * it is refused by the server, because an empty card on the roadmap is worse than no
+   * card at all.
+   */
+  const setModulePublished = async (on) => {
+    if (!on) {
+      const ok = await ask({
+        title: `Pull ${m.name} back?`,
+        body: 'The whole module comes off the roadmap and its chapters stop opening. '
+            + 'Progress already recorded is kept.',
+        confirmLabel: 'Pull it back',
+        intent: 'danger'
+      })
+      if (!ok) return
+    }
+    run(() => api.post(`/super/catalogue/modules/${m.id}/published`, { published: on }),
+      on ? 'Module released to learners.' : 'Module pulled back to draft.')
+  }
+
+  const setChapterPublished = (c, on) =>
+    run(() => api.post(`/super/catalogue/chapters/${c.id}/published`, { published: on }),
+      on ? `${c.title} released.` : `${c.title} pulled back to draft.`)
+
   const removeModule = async () => {
     const ok = await ask({
       title: `Delete ${m.name}?`,
@@ -140,6 +167,12 @@ export default function ModuleDetail() {
           <button className="btn btn-quiet" onClick={() => nav('/super/modules')}>Back</button>
           <button className="btn btn-quiet" onClick={rename}>Edit</button>
           <button className="btn btn-quiet" onClick={pasteOutline}>Paste an outline</button>
+          {m.published
+            ? <Tag kind="ok">Live for learners</Tag>
+            : <Tag kind="wait">Draft, not visible</Tag>}
+          <button className="btn btn-quiet" onClick={() => setModulePublished(!m.published)}>
+            {m.published ? 'Pull back to draft' : 'Release to learners'}
+          </button>
           <button className="btn btn-pib" onClick={addChapter}>New chapter</button>
         </>
       }
@@ -178,6 +211,7 @@ export default function ModuleDetail() {
                       {c.topics.length} topic{c.topics.length === 1 ? '' : 's'}
                       {c.questions > 0 && ` \u00b7 ${c.questions} questions`}
                     </span>
+                    {!c.published && <Tag kind="wait">Draft</Tag>}
                   </button>
                   {/*
                     * What is finished, as four dots rather than a sentence.
@@ -201,6 +235,10 @@ export default function ModuleDetail() {
                     </button>
                     <button className="icon-btn" aria-label="Move down" onClick={() => move(c.id, 1)}>
                       <Icon name="down" />
+                    </button>
+                    <button className="btn btn-quiet btn-sm"
+                      onClick={() => setChapterPublished(c, !c.published)}>
+                      {c.published ? 'Unpublish' : 'Release'}
                     </button>
                     <button className="btn btn-quiet btn-sm" onClick={() => nav(`/super/chapters/${c.id}`)}>Open</button>
                     <button className="btn btn-danger btn-sm" onClick={() => removeChapter(c)}>Delete</button>

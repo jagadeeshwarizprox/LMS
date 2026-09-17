@@ -3,6 +3,7 @@ import { api } from '../../api/client'
 import { useLearner } from '../../context/LearnerContext'
 import { useToast } from '../../context/ToastContext'
 import FaqBlock from '../../components/FaqBlock'
+import FileUpload from '../../components/FileUpload'
 import { FormSkeleton } from '../../components/Skeletons'
 import { Card, Empty, Page, Tag, TrackTag, fmtDate } from '../../components/Ui'
 
@@ -20,6 +21,8 @@ export default function LearnerProfile() {
   const [resumes, setResumes] = useState([])
   const [url, setUrl] = useState('')
   const [filename, setFilename] = useState('')
+  /* an uploaded file, as the alternative to the link box */
+  const [file, setFile] = useState(null)
 
   const load = () => api.get('/learner/resumes').then(setResumes).catch(() => setResumes([]))
   useEffect(() => { load() }, [])
@@ -28,9 +31,13 @@ export default function LearnerProfile() {
 
   const addResume = async () => {
     try {
-      await api.post('/learner/resumes', { url, filename })
+      await api.post('/learner/resumes', {
+        url: url.trim() || null,
+        fileId: file?.id || null,
+        filename: filename.trim() || file?.filename || null
+      })
       toast.push('Resume version saved.')
-      setUrl(''); setFilename('')
+      setUrl(''); setFilename(''); setFile(null)
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
   }
@@ -76,7 +83,12 @@ export default function LearnerProfile() {
                   {resumes.map((r) => (
                     <tr key={r.id}>
                       <td className="mono">v{r.version}</td>
-                      <td><a href={r.url} target="_blank" rel="noreferrer">{r.filename || 'Open'}</a></td>
+                      <td>
+                        <a
+                          href={r.fileId ? `/api/files/${r.fileId}` : r.url}
+                          target="_blank" rel="noreferrer"
+                        >{r.filename || 'Open'}</a>
+                      </td>
                       <td className="mono">{fmtDate(r.uploadedAt)}</td>
                       <td>{r.reviewedByMentor ? <Tag kind="ok">Reviewed</Tag> : <Tag kind="wait">Waiting</Tag>}</td>
                     </tr>
@@ -84,17 +96,48 @@ export default function LearnerProfile() {
                 </tbody>
               </table>
             )}
+            {/*
+              * Upload or link.
+              *
+              * This box took a URL and nothing else, so handing in a resume meant putting
+              * it on Drive and getting the sharing right, and the link stopped working a
+              * month later without anybody noticing until review. A pdf or a doc goes
+              * straight in now; the link is still there for anybody who prefers it.
+              */}
             <div className="row">
               <div className="col-md-6 mb-2">
-                <label className="form-label">File name</label>
-                <input className="form-control" value={filename} onChange={(e) => setFilename(e.target.value)} />
+                <label className="form-label">Upload a pdf or doc</label>
+                <FileUpload
+                  purpose="RESUME"
+                  multiple={false}
+                  label="Choose your resume"
+                  accept=".pdf,.doc,.docx,.rtf,.odt"
+                  onUploaded={(f) => { setFile(f); if (!filename) setFilename(f.filename) }}
+                />
               </div>
               <div className="col-md-6 mb-2">
-                <label className="form-label">Link</label>
-                <input className="form-control" value={url} onChange={(e) => setUrl(e.target.value)} />
+                <label className="form-label">Or a link to it</label>
+                <input className="form-control" placeholder="https://..."
+                  value={url} onChange={(e) => setUrl(e.target.value)}
+                  disabled={!!file} />
+                <div className="small text-muted mt-1">
+                  {file ? 'Remove the file to use a link instead.' : 'Drive, Dropbox, anywhere it opens without a login.'}
+                </div>
+              </div>
+              <div className="col-md-6 mb-2">
+                <label className="form-label">Call it</label>
+                <input className="form-control" placeholder="Resume, September"
+                  value={filename} onChange={(e) => setFilename(e.target.value)} />
               </div>
             </div>
-            <button className="btn btn-pib" onClick={addResume} disabled={!url}>Add version</button>
+            <button className="btn btn-pib" onClick={addResume} disabled={!url && !file}>
+              Add version
+            </button>
+            {file && (
+              <button className="btn btn-quiet ms-2" onClick={() => setFile(null)}>
+                Clear the file
+              </button>
+            )}
           </Card>
         </div>
       </div>

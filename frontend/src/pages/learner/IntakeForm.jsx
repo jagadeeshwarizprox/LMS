@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../../api/client'
 import { useLearner } from '../../context/LearnerContext'
 import { useToast } from '../../context/ToastContext'
@@ -123,6 +124,7 @@ function Field({ field, value, onChange }) {
 
 export default function IntakeForm() {
   const { learner, loading, reload } = useLearner()
+  const nav = useNavigate()
   const toast = useToast()
   const [form, setForm] = useState(null)
   const [sections, setSections] = useState(null)
@@ -201,8 +203,16 @@ export default function IntakeForm() {
       setForm(updated)
       toast.push('Section saved.')
       const next = sections.find((s) => !new Set(updated.completedSections).has(s.key))
-      if (next) switchTo(next.key)
-      else { toast.push('Form complete. Your modules are one step closer.'); await reload() }
+      if (next) { switchTo(next.key); return }
+      /*
+       * Finishing the last section used to leave the learner sitting on the completed
+       * form with a toast, which is a dead end: onboarding carries on with the
+       * prerequisite video and nothing said so or took them there. The home page is
+       * where that gate lives, so that is where finishing the form goes.
+       */
+      toast.push('Form complete. Next is the prerequisite video.')
+      await reload()
+      nav('/learn')
     } catch (e) {
       toast.push(e.message, 'bad')
     } finally {

@@ -129,6 +129,13 @@ public class ScheduleService {
         }
     }
 
+    /** The same rule as creating, read off the session itself rather than the request. */
+    public void assertMayEditSlot(String userId, String role, String slotId) {
+        Slot s = slots.findById(slotId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such session."));
+        assertMayEdit(userId, role, s.getMentorId());
+    }
+
     public SessionSchedule save(SessionSchedule body, String mentorId) {
         if (body.getMentorId() == null) body.setMentorId(mentorId);
         if (body.getRoomId() == null) {
@@ -349,19 +356,121 @@ public class ScheduleService {
          * over, had nowhere to go. A join URL given here becomes a room pinned to this
          * session; leave it blank and the host's own room is used as before.
          */
-        String joinUrl = str(body, "joinUrl", null);
-        if (joinUrl != null && !joinUrl.isBlank()) {
-            MeetingRoom one = new MeetingRoom();
-            one.setOwnerId(s.getMentorId());
-            one.setLabel(str(body, "topic", "Session link"));
-            one.setProvider(str(body, "provider", "ZOOM"));
-            one.setJoinUrl(joinUrl.trim());
-            one.setPasscode(str(body, "passcode", null));
-            s.setRoomId(rooms.save(one).getId());
+        String joinUrl = Validate.link(str(body, "joinUrl", null), "Join link");
+        if (joinUrl != null) {
+            s.setRoomId(pinRoom(s.getMentorId(), joinUrl,
+                    str(body, "topic", "Session link"),
+                    str(body, "provider", "ZOOM"),
+                    str(body, "passcode", null), null).getId());
         } else if (s.getMentorId() != null) {
             rooms.findByOwnerId(s.getMentorId()).ifPresent(r -> s.setRoomId(r.getId()));
         }
         return slots.save(s);
+    }
+
+    /**
+     * The room behind one session, created or corrected in place.
+     *
+     * A link typed into the session form used to be dropped unless it made it down the
+     * one path that happened to build a room out of it, and there was no path at all for
+     * changing it afterwards. Reusing the room a session already owns matters: replacing
+     * it would leave the old row behind and, worse, would not follow for anybody who had
+     * already been handed the link.
+     */
+    private MeetingRoom pinRoom(String ownerId, String joinUrl, String label,
+                                String provider, String passcode, String existingRoomId) {
+        MeetingRoom room = existingRoomId == null ? null : rooms.findById(existingRoomId).orElse(null);
+        if (room == null) {
+            room = new MeetingRoom();
+            room.setProvider(provider == null ? "ZOOM" : provider);
+        }
+        room.setOwnerId(ownerId);
+        if (label != null) room.setLabel(label);
+        room.setJoinUrl(joinUrl);
+        room.setPasscode(passcode);
+        return rooms.save(room);
+    }
+
+    /**
+     * Editing a session that already exists.
+     *
+     * There was no way to. The board could add and it could reassign, and everything
+     * else about a session, the time it starts, who it is for, the link it runs on, was
+     * fixed at the moment it was created. A time typed wrongly could only be worked
+     * around by adding a second session next to the first.
+     *
+     * Anything the caller leaves out is left alone, so a drawer that only changes the
+     * time does not have to resend the audience.
+     */
+    public Slot updateOne(String slotId, Map<String, Object> body) {
+        Slot s = slots.findById(slotId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such session."));
+        if (body.containsKey("kind")) s.setKind(str(body, "kind", s.getKind()));
+        if (body.containsKey("trackScope")) s.setTrackScope(str(body, "trackScope", s.getTrackScope()));
+        if (body.containsKey("batchId")) s.setBatchId(str(body, "batchId", null));
+        if (body.containsKey("topic")) s.setTopic(str(body, "topic", null));
+        if (body.containsKey("speaker")) s.setSpeaker(str(body, "speaker", null));
+        if (body.containsKey("openToAllBatches")) {
+            s.setOpenToAllBatches(!Boolean.FALSE.equals(body.get("openToAllBatches")));
+        }
+        if (body.containsKey("published")) s.setPublished(Boolean.TRUE.equals(body.get("published")));
+        if (body.containsKey("durationMin")) s.setDurationMin(num(body, "durationMin", s.getDurationMin()));
+        if (body.containsKey("capacity")) {
+            int seats = num(body, "capacity", s.getCapacity());
+            long taken = bookings.countBySlotId(s.getId());
+            if (seats < taken) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        taken + " people have already booked this one, so it cannot hold " + seats + ".");
+            }
+            s.setCapacity(seats);
+        }
+        if (body.containsKey("startsAt")) {
+            String at = str(body, "startsAt", null);
+            if (at == null) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Give the session a date and time.");
+            }
+            s.setStartsAt(Instant.parse(at));
+        }
+        if (body.containsKey("hostId")) {
+            String host = str(body, "hostId", null);
+            if (host != null) s.setMentorId(host);
+        }
+        if (body.containsKey("joinUrl")) {
+            String joinUrl = Validate.link(str(body, "joinUrl", null), "Join link");
+            if (joinUrl == null) {
+                /* cleared on purpose: fall back to whoever is hosting */
+                s.setRoomId(null);
+                if (s.getMentorId() != null) {
+                    rooms.findByOwnerId(s.getMentorId()).ifPresent(r -> s.setRoomId(r.getId()));
+                }
+            } else {
+                s.setRoomId(pinRoom(s.getMentorId(), joinUrl, s.getTopic(), null,
+                        str(body, "passcode", null), s.getRoomId()).getId());
+            }
+        }
+        return slots.save(s);
+    }
+
+    /**
+     * Calling a session off, and taking one off the board entirely.
+     *
+     * A session nobody has booked is a planning mistake and is deleted. One with people
+     * on it is cancelled instead and stays visible with its reason, because a learner who
+     * has it in their week needs to be told it is off rather than have it disappear.
+     */
+    public Map<String, Object> dropOne(String slotId, String reason) {
+        Slot s = slots.findById(slotId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such session."));
+        long taken = bookings.countBySlotId(slotId);
+        if (taken == 0) {
+            slots.delete(s);
+            return Map.of("deleted", true, "told", 0);
+        }
+        s.setCancelled(true);
+        s.setCancelReason(reason == null || reason.isBlank() ? "Called off" : reason.trim());
+        s.setOpen(false);
+        slots.save(s);
+        return Map.of("deleted", false, "told", taken);
     }
 
     /** Change who is taking one occurrence, without touching the schedule behind it. */
@@ -429,6 +538,7 @@ public class ScheduleService {
             case "GROUP_DOUBT", "DOUBT" -> "Doubt clearing";
             case "RECAP" -> "Recap";
             case "INTERACTIVE" -> "Interactive session";
+            case "DEBATE" -> "Debate session";
             case "PROJECT" -> "Project session";
             case "INDUSTRY", "LIVE" -> "Industry session";
             case "INDUCTION" -> "Induction";

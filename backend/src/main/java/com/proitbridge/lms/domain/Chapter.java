@@ -25,6 +25,13 @@ public class Chapter {
     private int position;
     private boolean active = true;
 
+    /**
+     * Same rule as the module above it. A chapter with no video in it yet, or a test
+     * still being written, is not something a learner should find on their roadmap.
+     * True by default so existing content is untouched; new chapters start as drafts.
+     */
+    private boolean published = true;
+
     /*
      * These three are never null. A chapter saved before one of them existed comes back
      * from Mongo with it unset, and every caller writes c.getTest().isEnabled() without
@@ -128,6 +135,8 @@ public class Chapter {
     public void setPosition(int position) { this.position = position; }
     public boolean isActive() { return active; }
     public void setActive(boolean active) { this.active = active; }
+    public boolean isPublished() { return published; }
+    public void setPublished(boolean published) { this.published = published; }
     public Test getTest() { return test; }
     public void setTest(Test test) { this.test = test == null ? new Test() : test; }
     public AssignmentSpec getAssignment() { return assignment; }

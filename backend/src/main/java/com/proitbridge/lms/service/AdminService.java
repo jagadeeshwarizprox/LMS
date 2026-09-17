@@ -352,8 +352,24 @@ public class AdminService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "A batch needs a code, for example B56.");
         }
         body.setCode(body.getCode().trim().toUpperCase());
+        /*
+         * A batch could be created with a code and nothing else, so the register filled
+         * up with rows called B57 and nobody could tell one cohort from another.
+         */
+        if (body.getName() == null || body.getName().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "A batch needs a name as well as a code.");
+        }
+        body.setName(body.getName().trim());
+        /*
+         * The conflict message used to stop at "that code already exists", which reads as
+         * a dead end to somebody whose actual intent was to put one more learner into the
+         * batch that already has that code. It says where to go instead.
+         */
         if (batches.findByCode(body.getCode()).isPresent()) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "That batch code already exists.");
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Batch " + body.getCode() + " already exists. To add a learner to it, use "
+                    + "Register and pick it from the batch list rather than creating it again.");
         }
         if (body.getMentorId() == null || body.getMentorId().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,

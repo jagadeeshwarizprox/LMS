@@ -75,6 +75,9 @@ public class CatalogueService {
             if (body.getCode() == null || body.getCode().isBlank()) {
                 body.setCode(nextModuleCode(all));
             }
+            /* a module starts as a draft. It used to be on the roadmap of every learner
+               whose course contained it from the second it was named. */
+            body.setPublished(false);
         }
         CourseModule saved = modules.save(body);
         activity.log(null, actorEmail, body.getId() == null ? "CREATE_MODULE" : "UPDATE_MODULE",
@@ -138,6 +141,48 @@ public class CatalogueService {
     /** Plain lists, for the screens that only need to choose from them. */
     public List<CourseModule> moduleList() { return modules.findAllByOrderByPositionAsc(); }
 
+    /**
+     * Releasing a module or a chapter to learners, and pulling one back.
+     *
+     * The catalogue had a publish button at course level only, so everything below it
+     * was live as soon as it existed and the only way to hide unfinished material was
+     * not to create it yet. A module released with nothing in it is still nothing, so
+     * releasing one with no published chapter under it is refused rather than quietly
+     * putting an empty card on the roadmap.
+     */
+    public CourseModule setModulePublished(String moduleId, boolean on, String actorEmail) {
+        CourseModule m = modules.findById(moduleId).orElseThrow(() ->
+                new ResponseStatusException(HttpStatus.NOT_FOUND, "No such module."));
+        if (on) {
+            long ready = chapters.findByModuleIdOrderByPositionAsc(moduleId).stream()
+                    .filter(Chapter::isPublished).count();
+            if (ready == 0) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "Release at least one chapter first, or this arrives on the roadmap empty.");
+            }
+        }
+        m.setPublished(on);
+        CourseModule saved = modules.save(m);
+        activity.log(null, actorEmail, on ? "PUBLISH_MODULE" : "UNPUBLISH_MODULE",
+                "module", saved.getName());
+        return saved;
+    }
+
+    public Chapter setChapterPublished(String chapterId, boolean on, String actorEmail) {
+        Chapter c = chapters.findById(chapterId).orElseThrow(() ->
+                new ResponseStatusException(HttpStatus.NOT_FOUND, "No such chapter."));
+        if (on && topics.findByChapterIdOrderByPositionAsc(chapterId).stream()
+                .noneMatch(Topic::isActive)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "This chapter has no topics in it yet, so there is nothing to release.");
+        }
+        c.setPublished(on);
+        Chapter saved = chapters.save(c);
+        activity.log(null, actorEmail, on ? "PUBLISH_CHAPTER" : "UNPUBLISH_CHAPTER",
+                "chapter", saved.getTitle());
+        return saved;
+    }
+
     public List<Chapter> chapterList(String moduleId) {
         return chapters.findByModuleIdOrderByPositionAsc(moduleId);
     }
@@ -168,6 +213,8 @@ public class CatalogueService {
                     new ResponseStatusException(HttpStatus.NOT_FOUND, "No such chapter."));
 
         boolean isNew = c.getId() == null;
+        /* same as the module: written first, released second */
+        if (isNew) c.setPublished(false);
         c.setModuleId(in.moduleId());
         c.setTitle(in.title());
         c.setSummary(in.summary());
@@ -740,6 +787,9 @@ public class CatalogueService {
             row.put("description", m.getDescription());
             row.put("position", m.getPosition());
             row.put("active", m.isActive());
+            row.put("published", m.isPublished());
+            row.put("publishedChapters", chapterRows.stream()
+                    .filter(c -> Boolean.TRUE.equals(c.get("published"))).count());
             row.put("chapters", chapterRows);
             row.put("topics", chapterRows.stream().mapToInt(c -> ((List<?>) c.get("topics")).size()).sum());
             row.put("minutes", chapterRows.stream().mapToInt(c -> (Integer) c.get("minutes")).sum());
@@ -804,6 +854,7 @@ public class CatalogueService {
         row.put("id", c.getId());
         row.put("title", c.getTitle());
         row.put("summary", c.getSummary());
+        row.put("published", c.isPublished());
         row.put("position", c.getPosition());
         row.put("active", c.isActive());
         row.put("topics", topicRows);

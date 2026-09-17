@@ -3,6 +3,7 @@ import { api } from '../../api/client'
 import { useToast } from '../../context/ToastContext'
 import { TableSkeleton } from '../../components/Skeletons'
 import { useDialog } from '../../components/Dialog'
+import FileUpload from '../../components/FileUpload'
 import { Card, Empty, Page, Tag, fmtDateTime } from '../../components/Ui'
 
 export default function MentorSlots() {
@@ -14,7 +15,8 @@ export default function MentorSlots() {
   })
 
   const [room, setRoom] = useState({ joinUrl: '', passcode: '' })
-  const [rec, setRec] = useState({ title: '', externalId: '', slotId: '', notes: '' })
+  const [rec, setRec] = useState({ title: '', videoLink: '', slotId: '', notes: '' })
+  const [recFile, setRecFile] = useState(null)
   const [check, setCheck] = useState(null)
 
   const load = async () => {
@@ -40,16 +42,44 @@ export default function MentorSlots() {
     } catch (e) { toast.push(e.message, 'bad') }
   }
 
+  /**
+   * Publishing a recording from this page.
+   *
+   * This posted a field called `externalId`, which is not something the publish endpoint
+   * has ever read. Jackson dropped it, the server saw neither a link nor a file and
+   * refused, and the form said the link was wrong. The box was labelled "Recording link"
+   * and its note asked for a YouTube id, so whichever of the two you pasted was the
+   * wrong one. It takes the link now, or the file itself.
+   */
+  const recLinkProblem = rec.videoLink.trim()
+    && !/^https?:\/\/\S+\.\S+/i.test(rec.videoLink.trim())
+    && !/^[\w-]{8,}$/.test(rec.videoLink.trim())
+    ? 'Paste the full YouTube or Zoom link.'
+    : null
+
   const publish = async () => {
+    if (recLinkProblem) { toast.push(recLinkProblem, 'bad'); return }
     try {
-      await api.post('/mentor/recordings', rec)
+      await api.post('/mentor/recordings', {
+        title: rec.title,
+        slotId: rec.slotId || null,
+        videoLink: rec.videoLink.trim() || null,
+        fileId: recFile?.id || null,
+        coveredSummary: rec.notes || null
+      })
       toast.push('Recording published to the learners who were in that session.')
-      setRec({ title: '', externalId: '', slotId: '', notes: '' })
+      setRec({ title: '', videoLink: '', slotId: '', notes: '' })
+      setRecFile(null)
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
   }
 
   const set = (k) => (e) => setDraft((d) => ({ ...d, [k]: e.target.value }))
+
+  const slotLinkProblem = draft.joinUrl.trim()
+    && !/^https?:\/\/\S+\.\S+/i.test(draft.joinUrl.trim())
+    ? 'A join link starts with https:// and points at a real address.'
+    : null
 
   const release = async () => {
     try {
@@ -138,7 +168,7 @@ export default function MentorSlots() {
 
       <Card
         title="Publish a recording"
-        note="Upload to YouTube as unlisted, then paste the id. The id is stored once and never shown again, not even here."
+        note="Put it on YouTube as unlisted and paste the link, or upload the file here. The link is stored once and is never shown to a learner."
       >
         <div className="row g-2 align-items-end">
           <div className="col-md-4">
@@ -148,8 +178,14 @@ export default function MentorSlots() {
           </div>
           <div className="col-md-3">
             <label className="form-label">Recording link</label>
-            <input className="form-control" value={rec.externalId}
-              onChange={(e) => setRec((r) => ({ ...r, externalId: e.target.value }))} />
+            <input
+              className={`form-control ${recLinkProblem ? 'is-invalid' : ''}`}
+              placeholder="https://youtu.be/..."
+              value={rec.videoLink}
+              disabled={!!recFile}
+              onChange={(e) => setRec((r) => ({ ...r, videoLink: e.target.value }))}
+            />
+            {recLinkProblem && <div className="invalid-feedback d-block">{recLinkProblem}</div>}
           </div>
           <div className="col-md-3">
             <label className="form-label">Session</label>
@@ -163,9 +199,27 @@ export default function MentorSlots() {
           </div>
           <div className="col-md-2">
             <button className="btn btn-pib w-100" onClick={publish}
-              disabled={!rec.title || !rec.externalId}>Publish</button>
+              disabled={!rec.title || (!rec.videoLink.trim() && !recFile)}>Publish</button>
           </div>
-          <div className="col-12">
+
+          {/* the other half of the choice: a file, for a session nobody put on YouTube */}
+          <div className="col-md-6">
+            <label className="form-label">Or upload the recording or its notes</label>
+            <FileUpload
+              purpose="RESOURCE"
+              multiple={false}
+              label="Choose a file"
+              accept=".mp4,.webm,.mov,.m4v,.pdf,.doc,.docx,.ppt,.pptx"
+              onUploaded={(f) => { setRecFile(f); if (!rec.title) setRec((r) => ({ ...r, title: f.filename })) }}
+            />
+            {recFile && (
+              <button className="btn btn-quiet btn-sm mt-2" onClick={() => setRecFile(null)}>
+                Clear the file
+              </button>
+            )}
+          </div>
+
+          <div className="col-md-6">
             <label className="form-label">What it covers</label>
             <input className="form-control" value={rec.notes}
               onChange={(e) => setRec((r) => ({ ...r, notes: e.target.value }))} />
@@ -207,13 +261,37 @@ export default function MentorSlots() {
               <option value="BOTH">Both</option>
             </select>
           </div>
-          <div className="col-md-10">
-            <div className="small muted">
-              Sessions use your standing room above. There is no per session link to paste.
-            </div>
+          {/*
+            * A link for this one session.
+            *
+            * The box used to be here, the value was posted, and it was thrown away: the
+            * endpoint bound onto Slot, which has no link field on it, so a session was
+            * saved with no room and the learner who booked it was told at the window
+            * that no meeting link was set. Then the box was removed and the note said
+            * there was no per session link, which made a guest's Zoom impossible to use
+            * at all. It is back, and it is stored.
+            */}
+          <div className="col-md-5">
+            <label className="form-label">Link for this session</label>
+            <input
+              className={`form-control ${slotLinkProblem ? 'is-invalid' : ''}`}
+              placeholder={room.joinUrl ? 'Leave blank to use your standing room' : 'https://zoom.us/j/...'}
+              value={draft.joinUrl}
+              onChange={set('joinUrl')}
+            />
+            {slotLinkProblem && <div className="invalid-feedback d-block">{slotLinkProblem}</div>}
+          </div>
+          <div className="col-md-5">
+            {!room.joinUrl && !draft.joinUrl.trim() && (
+              <div className="small" style={{ color: 'var(--stop)' }}>
+                You have no standing room saved above and no link here, so anyone who books
+                this will reach the window and find nothing to join.
+              </div>
+            )}
           </div>
           <div className="col-md-2">
-            <button className="btn btn-pib w-100" onClick={release} disabled={!draft.startsAt}>Release</button>
+            <button className="btn btn-pib w-100" onClick={release}
+              disabled={!draft.startsAt || !!slotLinkProblem}>Release</button>
           </div>
         </div>
       </Card>

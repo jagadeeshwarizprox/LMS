@@ -129,7 +129,9 @@ export default function MentorHome() {
   const KIND = {
     ONBOARDING: 'Onboarding call', INDUCTION: 'Induction',
     DOUBT: 'Doubt clearing', GROUP_DOUBT: 'Group doubt clearing',
-    LIVE: 'Live session', PROJECT: 'Project session', MOCK: 'Mock interview'
+    LIVE: 'Live session', PROJECT: 'Project session', MOCK: 'Mock interview',
+    INTERACTIVE: 'Interactive session', DEBATE: 'Debate session',
+    RECAP: 'Recap session', INDUSTRY: 'Industry expert session'
   }
 
   const counts = data.counts || {}

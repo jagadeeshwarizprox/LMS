@@ -95,11 +95,15 @@ public class LearnerProgressService {
         for (String moduleId : bundle.getModuleIds()) {
             CourseModule mod = modules.findById(moduleId).orElse(null);
             if (mod == null) continue;
+            /* drafts are not on the roadmap, so they must not be in the totals either:
+               a percentage measured against content nobody can see never reaches 100 */
+            if (!mod.isPublished()) continue;
 
             List<Map<String, Object>> chapterViews = new ArrayList<>();
             int modTopics = 0, modWatched = 0;
 
             for (Chapter c : chapters.findByModuleIdOrderByPositionAsc(moduleId)) {
+                if (!c.isPublished()) continue;
                 Progress p = byChapter.get(c.getId());
                 List<Topic> ts = topics.findByChapterIdOrderByPositionAsc(c.getId()).stream()
                         .filter(Topic::isActive).toList();

@@ -69,7 +69,9 @@ function DialogShell({ config, onClose }) {
     }
   }, [onClose])
 
+  const [touched, setTouched] = useState(false)
   const missing = fields.filter((f) => f.required && !String(values[f.name] || '').trim())
+  const missingNames = new Set(missing.map((f) => f.name))
   /*
    * A field can carry its own rule. Phone and link boxes used to accept anything and the
    * refusal arrived from the server after the dialog had already closed, which loses
@@ -83,7 +85,7 @@ function DialogShell({ config, onClose }) {
 
   const submit = (e) => {
     e?.preventDefault?.()
-    if (!ready) return
+    if (!ready) { setTouched(true); return }
     setBusy(true)
     onClose(values)
   }
@@ -125,7 +127,7 @@ function DialogShell({ config, onClose }) {
             {f.options ? (
               <select
                 id={`dlg-${f.name}`}
-                className="form-select"
+                className={`form-select ${touched && missingNames.has(f.name) ? 'is-invalid' : ''}`}
                 value={values[f.name]}
                 onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
               >
@@ -137,7 +139,7 @@ function DialogShell({ config, onClose }) {
             ) : f.multiline ? (
               <textarea
                 id={`dlg-${f.name}`}
-                className="form-control"
+                className={`form-control ${touched && missingNames.has(f.name) ? 'is-invalid' : ''}`}
                 rows={3}
                 placeholder={f.placeholder}
                 value={values[f.name]}
@@ -146,7 +148,7 @@ function DialogShell({ config, onClose }) {
             ) : (
               <input
                 id={`dlg-${f.name}`}
-                className={`form-control ${problems[f.name] ? 'is-invalid' : ''}`}
+                className={`form-control ${problems[f.name] || (touched && missingNames.has(f.name)) ? 'is-invalid' : ''}`}
                 type={f.type || 'text'}
                 min={f.min}
                 max={f.max}
@@ -177,13 +179,25 @@ function DialogShell({ config, onClose }) {
         </div>
 
         <div className="dlg-foot">
+          {/*
+            * A confirm button that is simply dead is the single most reported fault in
+            * this product: a question drafted by the model has no explanation, the Why
+            * box shows its placeholder, the box looks filled, and Save does nothing with
+            * nothing said. The button now stays pressable and the press names what is
+            * still missing.
+            */}
+          {touched && missing.length > 0 && (
+            <span className="dlg-blocked">
+              Still needed: {missing.map((f) => f.label).join(', ')}
+            </span>
+          )}
           <button type="button" className="btn btn-quiet" onClick={() => onClose(null)}>
             {cancelLabel}
           </button>
           <button
             type="submit"
             className={intent === 'danger' ? 'btn btn-danger' : 'btn btn-pib'}
-            disabled={!ready}
+            disabled={busy}
           >
             {busy && <Icon name="spinner" size={14} className="spin me-2" />}
             {confirmLabel}

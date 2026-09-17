@@ -343,15 +343,26 @@ export default function Register() {
                   className={`form-select ${noBatch ? 'is-invalid' : ''}`}
                   value={enrol.batchId} onChange={set('batchId')}>
                   <option value="">Choose a batch</option>
-                  {batches.filter((b) => b.open !== false).map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.code} · starts {b.startDate}{b.mentor ? ` · ${b.mentor}` : ''}
-                    </option>
-                  ))}
+                  {/*
+                    * A closed batch used to be dropped from this list entirely. Closing
+                    * is about intake, not about the cohort ending, so a late joiner who
+                    * belongs in a running batch left the admin with no way to place them
+                    * and they went to Batches and tried to create it again, which is the
+                    * "that batch code already exists" report. Closed batches are listed
+                    * and say so.
+                    */}
+                  {[...batches]
+                    .sort((a, b) => (a.open === false) - (b.open === false))
+                    .map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.code} · starts {b.startDate}{b.mentor ? ` · ${b.mentor}` : ''}
+                        {b.open === false ? ' · closed to new intake' : ''}
+                      </option>
+                    ))}
                 </select>
                 <div className="small text-muted mt-1">
-                  They become this batch's mentor's learner. Only batches open to new
-                  joiners are listed.
+                  They become this batch's mentor's learner. A batch closed to new intake
+                  is still listed here, for a late joiner who belongs in a running cohort.
                 </div>
               </div>
             )}

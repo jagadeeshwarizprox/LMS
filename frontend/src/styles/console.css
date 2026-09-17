@@ -587,3 +587,18 @@ a.asset b, a.asset span { text-decoration: none; }
   .topbar { padding: 12px 14px; }
   .topbar-search { display: none; }
 }
+
+/* a tile that filters the view it sits above */
+.stat-btn { text-align: left; width: 100%; cursor: pointer; font: inherit; }
+.stat-btn.is-on { border-color: var(--blue-400); box-shadow: 0 0 0 2px var(--blue-050); }
+
+/* edit and remove, on the card itself rather than nowhere at all */
+.board-card header { position: relative; }
+.board-acts { margin-left: auto; display: inline-flex; gap: 2px; opacity: 0; transition: opacity .15s; }
+.board-card:hover .board-acts, .board-card:focus-within .board-acts { opacity: 1; }
+.board-act {
+  background: none; border: 1px solid transparent; border-radius: var(--radius-sm);
+  color: var(--ink-30); padding: 2px 4px; line-height: 0; cursor: pointer;
+}
+.board-act:hover { color: var(--navy-800); border-color: var(--line); background: var(--surface-2); }
+@media (hover: none) { .board-acts { opacity: 1; } }

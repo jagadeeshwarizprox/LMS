@@ -85,6 +85,36 @@ public class WeekController {
         return schedule.createOne(body);
     }
 
+    /**
+     * Changing a session after it is on the board.
+     *
+     * The board could add and it could reassign, and nothing else. A time typed wrongly,
+     * an audience picked wrongly or a join link that turned out to be the wrong meeting
+     * all had to be lived with, or worked around by adding a second session beside the
+     * first. A mentor may change what they host; an admin may change anything.
+     */
+    @PutMapping("/sessions/{id}")
+    public Slot updateOne(@PathVariable String id, @RequestBody Map<String, Object> body) {
+        AuthUser me = current.get();
+        boolean admin = "ADMIN".equals(me.role()) || "SUPER_ADMIN".equals(me.role());
+        schedule.assertMayEditSlot(me.id(), me.role(), id);
+        if (!admin) {
+            /* a mentor cannot hand their session to somebody else, or release the week */
+            body.remove("hostId");
+            body.remove("published");
+        }
+        return schedule.updateOne(id, body);
+    }
+
+    /** Taking one off. Deleted if nobody booked it, cancelled with a reason if they did. */
+    @DeleteMapping("/sessions/{id}")
+    public Map<String, Object> dropOne(@PathVariable String id,
+                                       @RequestParam(required = false) String reason) {
+        AuthUser me = current.get();
+        schedule.assertMayEditSlot(me.id(), me.role(), id);
+        return schedule.dropOne(id, reason);
+    }
+
     /** Moving a session to another host is an admin act: nobody takes their own off someone. */
     @PostMapping("/sessions/{id}/host")
     public Slot reassign(@PathVariable String id, @RequestBody Map<String, String> body) {

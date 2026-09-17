@@ -196,7 +196,7 @@ public class LearnerController {
 
     @PostMapping("/resumes")
     public ResumeVersion addResume(@RequestBody Map<String, String> body) {
-        return svc.addResume(uid(), body.get("filename"), body.get("url"));
+        return svc.addResume(uid(), body.get("filename"), body.get("url"), body.get("fileId"));
     }
 
     @GetMapping("/jobs")

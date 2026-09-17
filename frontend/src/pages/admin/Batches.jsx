@@ -162,7 +162,8 @@ export default function Batches() {
           </div>
           <div className="col-md-3">
             <label className="form-label">Name</label>
-            <input className="form-control" value={draft.name} onChange={set('name')} />
+            <input className="form-control" placeholder="Data Science, Aug cohort"
+              value={draft.name} onChange={set('name')} />
           </div>
           <div className="col-md-3">
             <label className="form-label">Mentor</label>
@@ -190,7 +191,13 @@ export default function Batches() {
           </div>
           <div className="col-12">
             <button className="btn btn-pib" onClick={create}
-              disabled={!draft.code || !draft.mentorId || !!linkProblem}>Create the batch</button>
+              disabled={!draft.code || !draft.name || !draft.mentorId || !!linkProblem}>
+              Create the batch
+            </button>
+            {/* the code is not a name: a register full of rows called B57 is unreadable */}
+            {!draft.name && draft.code && (
+              <span className="muted small ms-2">A batch needs a name as well as a code.</span>
+            )}
           </div>
         </div>
       </Card>

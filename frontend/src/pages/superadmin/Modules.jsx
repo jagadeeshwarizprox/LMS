@@ -125,6 +125,9 @@ export default function Modules() {
               <span className="tree-idx">{m.code || `M${i + 1}`}</span>
               <span className="tree-name">{m.name}</span>
               <span className="tree-meta">
+                {/* draft is the first thing to know about a module: it means no learner
+                    has ever seen it, whatever else the row says about it */}
+                {!m.published && <span className="tag tag-wait">Draft</span>}
                 {!m.active
                   ? <span className="tag tag-wait">Archived</span>
                   : gaps > 0

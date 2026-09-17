@@ -196,7 +196,11 @@ public class LearnerService {
         for (String moduleId : bundle.getModuleIds()) {
             CourseModule t = modules.findById(moduleId).orElse(null);
             if (t == null) continue;
-            List<Chapter> chs = chapters.findByModuleIdOrderByPositionAsc(moduleId);
+            /* a module still being written is not on anybody's roadmap */
+            if (!t.isPublished()) continue;
+            List<Chapter> chs = chapters.findByModuleIdOrderByPositionAsc(moduleId).stream()
+                    .filter(Chapter::isPublished)
+                    .toList();
             boolean moduleOpen = gatesCleared && previousComplete;
             int done = 0;
             List<Map<String, Object>> chapterViews = new ArrayList<>();
@@ -471,6 +475,15 @@ public class LearnerService {
         if (!l.modulesUnlocked(inductionCounts(l))) return false;
         Chapter c = chapters.findById(chapterId).orElse(null);
         if (c == null || c.getModuleId() == null) return false;
+        /*
+         * Hiding a draft from the roadmap is presentation. This is the rule: an
+         * unpublished chapter, or one inside an unpublished module, is not openable even
+         * by a learner who kept the link from before it was pulled back.
+         */
+        if (!c.isPublished()) return false;
+        if (!moduleRepo.findById(c.getModuleId()).map(CourseModule::isPublished).orElse(false)) {
+            return false;
+        }
         Bundle b = publishedCourseFor(l);
         return b != null && b.getModuleIds() != null && b.getModuleIds().contains(c.getModuleId());
     }
@@ -482,6 +495,9 @@ public class LearnerService {
         if (!l.modulesUnlocked(inductionCounts(l))) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                     "Finish onboarding to open your modules.");
+        }
+        if (!canOpenChapter(userId, chapterId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Chapter not found.");
         }
         Progress p = progressFor(l, c);
         List<Topic> ts = topics.findByChapterIdOrderByPositionAsc(chapterId).stream()
@@ -1081,14 +1097,20 @@ public class LearnerService {
         return projects.save(body);
     }
 
-    public ResumeVersion addResume(String userId, String filename, String url) {
+    public ResumeVersion addResume(String userId, String filename, String url, String fileId) {
         Learner l = require(userId);
+        if ((url == null || url.isBlank()) && (fileId == null || fileId.isBlank())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Upload the file or give a link to it.");
+        }
         List<ResumeVersion> existing = resumes.findByLearnerIdOrderByVersionDesc(l.getId());
         ResumeVersion r = new ResumeVersion();
         r.setLearnerId(l.getId());
         r.setVersion(existing.isEmpty() ? 1 : existing.get(0).getVersion() + 1);
         r.setFilename(filename);
-        r.setUrl(url);
+        /* a link is still a link, and still has to be one */
+        r.setUrl(Validate.link(url, "Resume link"));
+        r.setFileId(fileId == null || fileId.isBlank() ? null : fileId);
         return resumes.save(r);
     }
 

@@ -42,6 +42,16 @@ public class CatalogueController {
     @PostMapping("/modules")
     public CourseModule saveModule(@RequestBody CourseModule body) { return catalogue.saveModule(body, actor()); }
 
+    @PostMapping("/modules/{id}/published")
+    public CourseModule publishModule(@PathVariable String id, @RequestBody Map<String, Object> body) {
+        return catalogue.setModulePublished(id, !Boolean.FALSE.equals(body.get("published")), actor());
+    }
+
+    @PostMapping("/chapters/{id}/published")
+    public Chapter publishChapter(@PathVariable String id, @RequestBody Map<String, Object> body) {
+        return catalogue.setChapterPublished(id, !Boolean.FALSE.equals(body.get("published")), actor());
+    }
+
     @DeleteMapping("/modules/{id}")
     public Map<String, Object> deleteModule(@PathVariable String id) {
         return catalogue.deleteModule(id, actor());

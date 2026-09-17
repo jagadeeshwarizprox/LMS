@@ -244,8 +244,25 @@ public class MentorController {
         return svc.logCall(me.id(), me.role(), id, body.get("notes"), body.get("nextGoal"));
     }
 
+    /**
+     * Releasing a one to one slot.
+     *
+     * This used to bind straight onto {@link Slot}, which has no join link on it at all.
+     * The mentor typed a Zoom link into the form, Jackson dropped it on the floor, the
+     * slot was saved with no room, and the learner who booked it reached the window and
+     * was told no meeting link was set. The link was never stored anywhere.
+     *
+     * It goes through the same creation path the week board uses instead, which turns a
+     * link into a room pinned to the session and falls back to the mentor's standing room
+     * when the box is left empty.
+     */
     @PostMapping("/slots")
-    public Slot releaseSlot(@RequestBody Slot body) { return svc.releaseSlot(current.get().id(), body); }
+    public Slot releaseSlot(@RequestBody Map<String, Object> body) {
+        AuthUser me = current.get();
+        body.put("hostId", me.id());
+        body.put("published", true);
+        return schedule.createOne(body);
+    }
 
     @GetMapping("/slots")
     public List<Map<String, Object>> slots() { return svc.slotBookings(current.get().id()); }

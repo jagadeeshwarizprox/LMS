@@ -55,6 +55,32 @@ export default function ChapterDetail() {
   }
   if (!c) return <Empty title="Chapter not found">It may have been deleted.</Empty>
 
+  /**
+   * Releasing the chapter, and pulling it back.
+   *
+   * Nothing below course level had a publish flag, so a chapter was on the learner's
+   * roadmap from the moment it was named and the only way to hide unfinished material
+   * was not to write it yet. Pulling one back closes it for everybody, including a
+   * learner who kept the link.
+   */
+  const setPublished = async (on) => {
+    if (!on) {
+      const ok = await ask({
+        title: `Pull ${c.title} back?`,
+        body: 'It comes off the roadmap and stops opening for anyone who has the link. '
+            + 'Progress already recorded against it is kept.',
+        confirmLabel: 'Pull it back',
+        intent: 'danger'
+      })
+      if (!ok) return
+    }
+    try {
+      await api.post(`/super/catalogue/chapters/${id}/published`, { published: on })
+      toast.push(on ? 'Chapter released to learners.' : 'Chapter pulled back to draft.')
+      await load()
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
+
   const run = async (fn, msg) => {
     try { await fn(); toast.push(msg); await load() }
     catch (e) { toast.push(e.message, 'bad') }
@@ -148,9 +174,15 @@ export default function ChapterDetail() {
           value: existing ? letters[existing.correctIndex] || '' : '',
           placeholder: 'Which one is right?',
           options: letters.map((x) => ({ value: x, label: `Option ${x}` })) },
+        /*
+         * The placeholder used to read as a finished sentence, so an empty box looked
+         * filled and the disabled Save button looked broken. It is a hint now, and the
+         * dialog says which boxes are holding the save back.
+         */
         { name: 'explanation', label: 'Why', required: true, multiline: true,
           value: existing?.explanation || '',
-          placeholder: 'Shown after they answer. This is the only teaching the test does.' },
+          placeholder: 'Why is that the right answer?',
+          hint: 'Shown after they answer. This is the only teaching the test does.' },
         { name: 'marks', label: 'Marks', type: 'number', min: 1,
           value: String(existing?.marks || 1),
           hint: 'What this question is worth against the pass mark. Leave at one if every '
@@ -221,6 +253,12 @@ export default function ChapterDetail() {
         <>
           <button className="btn" onClick={() => nav('/super/modules')}>Back to modules</button>
           <button className="btn" onClick={pasteTopics}>Paste an outline</button>
+          {c.published
+            ? <Tag kind="ok">Live for learners</Tag>
+            : <Tag kind="wait">Draft, not visible</Tag>}
+          <button className="btn" onClick={() => setPublished(!c.published)}>
+            {c.published ? 'Pull back to draft' : 'Release to learners'}
+          </button>
           <button className="btn btn-pib" onClick={() => setEditing({ chapterId: id })}>Add a topic</button>
         </>
       )}

@@ -231,8 +231,28 @@ function useCountUp(value) {
   return numeric === null ? value : `${shown}${suffix}`
 }
 
-export function Stat({ value, label, tone, icon, hint, trend }) {
+/**
+ * A tile. With onClick it becomes a real button, because an icon in the corner of a
+ * tile reads as an edit control whether or not anything is wired to it: the pencil on
+ * "in draft" was decoration and people pressed it for a week.
+ */
+export function Stat({ value, label, tone, icon, hint, trend, onClick, active }) {
   const shown = useCountUp(value)
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        className={`stat stat-btn ${active ? 'is-on' : ''}`}
+        onClick={onClick}
+        aria-pressed={!!active}
+      >
+        {icon && <span className="stat-icon"><Icon name={icon} size={16} /></span>}
+        <div className="value" style={tone ? { color: tone } : undefined}>{shown}</div>
+        <div className="label">{label}</div>
+        {hint && <div className="stat-hint">{hint}</div>}
+      </button>
+    )
+  }
   return (
     <div className="stat">
       {icon && <span className="stat-icon"><Icon name={icon} size={16} /></span>}

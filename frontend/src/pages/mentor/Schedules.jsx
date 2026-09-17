@@ -17,6 +17,7 @@ const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'
 const KINDS = [
   ['GROUP_DOUBT', 'Group doubt clearing'], ['DOUBT', 'One to one doubt clearing'],
   ['LIVE', 'Live session'], ['INTERACTIVE', 'Interactive session'],
+  ['DEBATE', 'Debate session'],
   ['RECAP', 'Recap session'], ['INDUSTRY', 'Industry expert session'],
   ['PROJECT', 'Project session'],
   ['ONBOARDING', 'Onboarding call'], ['INDUCTION', 'Induction']

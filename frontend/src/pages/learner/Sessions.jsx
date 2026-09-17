@@ -13,6 +13,10 @@ const KIND_LABEL = {
   DOUBT: 'One to one doubt clearing',
   GROUP_DOUBT: 'Group doubt clearing',
   LIVE: 'Live session',
+  INTERACTIVE: 'Interactive session',
+  DEBATE: 'Debate session',
+  RECAP: 'Recap session',
+  INDUSTRY: 'Industry expert session',
   PROJECT: 'Project session',
   MOCK: 'Mock interview'
 }
@@ -35,6 +39,28 @@ export default function Sessions() {
   }
 
   useEffect(() => { load() }, [learner])
+
+  /*
+   * The list refreshes itself.
+   *
+   * A slot released shortly before it starts never appeared: the page had been opened
+   * earlier and fetched once, so the only way to see a late release was to reload by
+   * hand, and releasing a day ahead looked like the only thing that worked. It polls
+   * every half minute while the tab is in front, and again the moment the tab is
+   * brought back, which is when somebody is actually about to join something.
+   */
+  useEffect(() => {
+    if (!learner) return undefined
+    const tick = () => { if (document.visibilityState === 'visible') load() }
+    const id = setInterval(tick, 30000)
+    document.addEventListener('visibilitychange', tick)
+    window.addEventListener('focus', tick)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', tick)
+      window.removeEventListener('focus', tick)
+    }
+  }, [learner])
 
   if (loading || !learner || !slots) return <TableSkeleton />
 

@@ -15,6 +15,19 @@ public class CourseModule {
     private int position;
     private boolean active = true;
 
+    /*
+     * Only a Bundle carried a publish flag, so a module half written inside a published
+     * course was live the moment its first chapter existed: the super admin's drafts
+     * were on the learner's roadmap, which is exactly what the review reported.
+     *
+     * It defaults true so that everything already in the catalogue stays where it is.
+     * A module created from now on is written as a draft by whoever creates it.
+     */
+    private boolean published = true;
+
+    public boolean isPublished() { return published; }
+    public void setPublished(boolean published) { this.published = published; }
+
     public String getCode() { return code; }
     public void setCode(String code) { this.code = code; }
     public String getName() { return name; }

@@ -480,20 +480,13 @@ public class MentorService {
         return calls.save(next);
     }
 
-    public Slot releaseSlot(String mentorId, Slot body) {
-        body.setId(null);
-        body.setMentorId(mentorId);
-        body.setOpen(true);
-        /*
-         * The learner's slot list filters on published, and this never set it. Every slot
-         * a mentor released was open, in the future, in scope, allowed by the feature
-         * toggles, and invisible: the mentor saw it on their own board, the learner's Open
-         * slots panel stayed empty, and the toast said "released to learners" the whole
-         * time. The button is called Release, so releasing is what it does.
-         */
-        body.setPublished(true);
-        return slots.save(body);
-    }
+    /*
+     * releaseSlot lived here and bound onto Slot directly, which has no join link on it,
+     * so every link a mentor typed into the release form was dropped by the deserialiser
+     * and the session was saved with no room on it. Releasing now goes through
+     * ScheduleService.createOne, the same path the week board uses, which turns a link
+     * into a room pinned to the session. One creation path, one set of rules.
+     */
 
     public List<Map<String, Object>> slotBookings(String mentorId) {
         return slots.findByMentorId(mentorId).stream().map(s -> {

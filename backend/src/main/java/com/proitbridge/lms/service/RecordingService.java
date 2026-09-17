@@ -117,6 +117,8 @@ public class RecordingService {
             case "GROUP_DOUBT", "DOUBT" -> "Doubt clearing";
             case "PROJECT" -> "Project session";
             case "LIVE" -> "Live session";
+            case "INTERACTIVE" -> "Interactive session";
+            case "DEBATE" -> "Debate session";
             case "INDUCTION" -> "Induction";
             case "MOCK" -> "Mock debrief";
             default -> "Session";
