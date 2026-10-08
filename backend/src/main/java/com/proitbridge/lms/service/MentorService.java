@@ -189,6 +189,9 @@ public class MentorService {
         m.put("percent", s.get("percent"));
         m.put("lastLoginAt", u == null ? null : u.getLastLoginAt());
         m.put("onboarded", l.gatesCleared());
+        /* the register's suspend button reads these two */
+        m.put("suspended", u != null && u.isSuspended());
+        m.put("active", u == null || u.isActive());
         /* the register draws a mentor column and an assign button off these two: without
            them every learner reads as unassigned however many are actually assigned */
         m.put("mentorId", l.getMentorId());

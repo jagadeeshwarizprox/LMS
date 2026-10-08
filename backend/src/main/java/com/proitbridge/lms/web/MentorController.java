@@ -295,9 +295,25 @@ public class MentorController {
         return recordingService.publish(body, me.id(), me.email());
     }
 
+    /** What has already gone out. A mentor sees their own, the office sees all. */
+    @GetMapping("/recordings/published")
+    public List<Map<String, Object>> publishedRecordings() {
+        AuthUser me = current.get();
+        boolean office = "ADMIN".equals(me.role()) || me.isSuperAdmin();
+        return recordingService.published(office ? null : me.id());
+    }
+
+    /** A mentor can take down what they published; the office can take down anything. */
     @DeleteMapping("/recordings/{id}")
     public Map<String, Object> unpublishRecording(@PathVariable String id) {
-        recordingService.unpublish(id, current.get().email());
+        AuthUser me = current.get();
+        boolean office = "ADMIN".equals(me.role()) || me.isSuperAdmin();
+        if (!office && !me.id().equals(recordingService.ownerOf(id))) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.FORBIDDEN,
+                    "Only the person who published this, or the office, can take it down.");
+        }
+        recordingService.unpublish(id, me.email());
         return Map.of("unpublished", true);
     }
 

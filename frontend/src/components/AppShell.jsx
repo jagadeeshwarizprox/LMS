@@ -111,11 +111,14 @@ const NAV = {
       ['/admin/register', 'All learners', 'batch'],
       ['/admin/batches', 'Batches', 'batches'],
       ['/super/features', 'Features and access', 'features'],
+      ['/admin/access', 'Access and sharing', 'security'],
       ['/analytics', 'Analytics', 'roadmap']
     ]],
     ['Teaching', [
       ['/week', 'Weekly sessions', 'sessions'],
+      ['/admin/coverage', 'Recording coverage', 'recordings'],
       ['/admin/projects', 'Projects', 'projects'],
+      ['/super/resources', 'Jobs and case studies', 'resources'],
       ['/admin/mentors', 'Mentors', 'people'],
       ['/admin/cover', 'Mentor cover', 'people']
     ]],
@@ -146,6 +149,8 @@ const NAV = {
       ['/super/modules', 'Modules and chapters', 'catalogue'],
       ['/super/courses', 'Courses and pricing', 'library'],
       ['/super/projects', 'Projects', 'projects'],
+      ['/super/rubrics', 'Rubrics', 'queues'],
+      ['/super/resources', 'Jobs and case studies', 'resources'],
       ['/week', 'Weekly sessions', 'sessions']
     ]],
     ['Setup', [

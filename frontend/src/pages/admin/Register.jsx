@@ -4,6 +4,7 @@ import { api } from '../../api/client'
 import { phoneError } from '../../api/validators'
 import { useToast } from '../../context/ToastContext'
 import { useDialog } from '../../components/Dialog'
+import { useAuth } from '../../context/AuthContext'
 import Avatar from '../../components/Avatar'
 import { TableSkeleton } from '../../components/Skeletons'
 import { Card, Empty, Page, Tag, TrackTag, fmtDateTime } from '../../components/Ui'
@@ -11,6 +12,8 @@ import { Card, Empty, Page, Tag, TrackTag, fmtDateTime } from '../../components/
 export default function Register() {
   const toast = useToast()
   const { ask } = useDialog()
+  const { user } = useAuth()
+  const isSuper = user?.role === 'SUPER_ADMIN'
   const [rows, setRows] = useState(null)
   const [mentors, setMentors] = useState([])
   const [track, setTrack] = useState('')
@@ -69,6 +72,55 @@ export default function Register() {
       await api.post(`/admin/access/devices/${row.id}/release`, {})
       toast.push('Device released.')
       await openDevices(devices.learner)
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
+
+  /* the sharing kill switch: every session ends now, nothing on the record changes */
+  const toggleSuspend = async (l) => {
+    if (l.suspended) {
+      const ok = await ask({ title: `Restore ${l.name}?`, body: 'They can sign in again straight away.', confirmLabel: 'Restore' })
+      if (!ok) return
+      try {
+        await api.post(`/admin/access/users/${l.userId}/suspend`, { suspended: false })
+        toast.push(`${l.name} can sign in again.`)
+        await load()
+      } catch (e) { toast.push(e.message, 'bad') }
+      return
+    }
+    const r = await ask({
+      title: `Suspend ${l.name}?`,
+      intent: 'danger',
+      body: 'Every session they have ends now and they cannot sign in until restored. '
+        + 'Use it when an account is being shared. Nothing on their record changes.',
+      fields: [{ name: 'reason', label: 'Reason, kept on the record', required: true }],
+      confirmLabel: 'Suspend'
+    })
+    if (!r) return
+    try {
+      await api.post(`/admin/access/users/${l.userId}/suspend`, { suspended: true, reason: r.reason })
+      toast.push(`${l.name} is suspended.`)
+      await load()
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
+
+  /* removing a learner switches them off; their history stays, and it can be undone */
+  const toggleActive = async (l) => {
+    const off = l.active !== false
+    const ok = await ask({
+      title: off ? `Deactivate ${l.name}?` : `Reactivate ${l.name}?`,
+      intent: off ? 'danger' : 'default',
+      body: off
+        ? 'They cannot sign in and drop out of the working lists. Nothing is deleted: '
+          + 'progress, tasks, projects and history all stay, and reactivating restores them.'
+        : 'They can sign in again and everything is where they left it.',
+      confirmWord: off ? 'deactivate' : undefined,
+      confirmLabel: off ? 'Deactivate' : 'Reactivate'
+    })
+    if (!ok) return
+    try {
+      await api.post(`/super/learners/${l.learnerId}/active`, { active: !off })
+      toast.push(off ? `${l.name} is deactivated.` : `${l.name} is active again.`)
+      await load()
     } catch (e) { toast.push(e.message, 'bad') }
   }
 
@@ -481,7 +533,11 @@ export default function Register() {
                     <td className="mono">{l.batch || '\u2014'}</td>
                     <td>{l.bundle || '\u2014'}</td>
                     <td className="mono">{l.percent}%</td>
-                    <td>{l.onboarded ? <Tag kind="ok">Done</Tag> : <Tag kind="wait">Open</Tag>}</td>
+                    <td>
+                      {l.onboarded ? <Tag kind="ok">Done</Tag> : <Tag kind="wait">Open</Tag>}
+                      {l.suspended && <> <Tag kind="stop">Suspended</Tag></>}
+                      {l.active === false && <> <Tag kind="stop">Deactivated</Tag></>}
+                    </td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {l.mentor
                         ? <span>{l.mentor}</span>
@@ -495,6 +551,14 @@ export default function Register() {
                         <button className="btn btn-s" onClick={() => resend(l.learnerId)}>Resend login</button>
                         <button className="btn btn-s" onClick={() => resetPassword(l)}>Reset password</button>
                         <button className="btn btn-s" onClick={() => openDevices(l)}>Devices</button>
+                        <button className="btn btn-s" onClick={() => toggleSuspend(l)}>
+                          {l.suspended ? 'Restore' : 'Suspend'}
+                        </button>
+                        {isSuper && (
+                          <button className="btn btn-s" onClick={() => toggleActive(l)}>
+                            {l.active === false ? 'Reactivate' : 'Deactivate'}
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>

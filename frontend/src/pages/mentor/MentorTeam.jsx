@@ -105,7 +105,8 @@ export default function MentorTeam() {
                   <td>{m.overdueTasks > 0 ? <Tag kind="stop">{m.overdueTasks}</Tag> : <span className="mono">0</span>}</td>
                   <td className="mono">{m.onHold}</td>
                   <td className="text-end">
-                    <button className="btn btn-quiet btn-sm">See their learners</button>
+                    <button className="btn btn-quiet btn-sm"
+                      onClick={(e) => { e.stopPropagation(); openMentor(m) }}>See their learners</button>
                   </td>
                 </tr>
               ))}

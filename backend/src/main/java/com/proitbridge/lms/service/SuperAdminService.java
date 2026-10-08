@@ -394,13 +394,22 @@ public class SuperAdminService {
     /* ---------------------------------------------------------------- deletion */
 
     /** Deletion sits here and nowhere else. It takes the learner record with it. */
-    public void deleteLearner(String learnerId, String actorEmail) {
+    /**
+     * Removing a learner switches their account off. It used to delete the user, the
+     * learner, their form and their progress, and left every task, project, booking,
+     * attendance row and payment-adjacent record pointing at nobody. Nothing is wiped
+     * now: they cannot sign in, they drop out of the active lists, and switching them
+     * back on restores everything as it was.
+     */
+    public Map<String, Object> setLearnerActive(String learnerId, boolean active, String actorEmail) {
         Learner l = learners.findById(learnerId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Learner not found."));
-        intakeForms.findByLearnerId(learnerId).ifPresent(intakeForms::delete);
-        progress.deleteAll(progress.findByLearnerId(learnerId));
-        users.findById(l.getUserId()).ifPresent(users::delete);
-        learners.delete(l);
-        activity.log(null, actorEmail, "DELETE_LEARNER", "learner", learnerId);
+        User u = users.findById(l.getUserId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No account for this learner."));
+        u.setActive(active);
+        users.save(u);
+        activity.log(null, actorEmail, active ? "RESTORE_LEARNER" : "DEACTIVATE_LEARNER",
+                "learner", u.getEmail());
+        return Map.of("learnerId", learnerId, "userId", u.getId(), "active", active);
     }
 }

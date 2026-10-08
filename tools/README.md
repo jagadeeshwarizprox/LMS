@@ -23,6 +23,7 @@ Maven Central, so `mvn` could never run. They are not a substitute for a compile
 | `check-scope.py` | A method touching a field its own class does not declare. What a bad de-Lombok pass leaves behind: it parses cleanly and fails at compile |
 | `check-java-imports.py` | A type used but never imported, which will not compile, and imports nothing uses. Pass `--all` to list the second kind |
 | `check-constructors.py` | A final field never assigned, or a parameter accepted and dropped. What a careless constructor edit leaves behind |
+| `check-roles.py` | A page calling an endpoint that refuses a role the page is open to. Reads the route guards in `App.jsx` and the rules in `SecurityConfig`, method-specific rules included. Calls a page only makes for some roles are listed with their gate, and the gate is checked to still be there |
 | `check-routes.py` | Two handlers mapped to one path, which makes Spring refuse to start |
 | `check-icons.py` | An icon name that is not in the map, which renders a blank button and never warns |
 | `check-a11y.py` | An icon-only button with no accessible name, and images with no alt |

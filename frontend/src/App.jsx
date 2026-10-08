@@ -73,6 +73,10 @@ const QuizDrafter = lazy(() => import('./pages/superadmin/QuizDrafter'))
 const ProjectBuilder = lazy(() => import('./pages/superadmin/ProjectBuilder'))
 const ProjectReview = lazy(() => import('./pages/mentor/ProjectReview'))
 const ProjectWorkspace = lazy(() => import('./pages/learner/ProjectWorkspace'))
+const Access = lazy(() => import('./pages/admin/Access'))
+const Coverage = lazy(() => import('./pages/admin/Coverage'))
+const Rubrics = lazy(() => import('./pages/superadmin/Rubrics'))
+const JobsAndCases = lazy(() => import('./pages/superadmin/JobsAndCases'))
 
 
 
@@ -205,6 +209,10 @@ export default function App() {
         element={<Guard roles={['MENTOR', 'ADMIN', 'SUPER_ADMIN']}><Analytics /></Guard>}
       />
       <Route path="/admin/projects" element={<Guard roles={['ADMIN', 'SUPER_ADMIN']}><AdminProjects /></Guard>} />
+      <Route path="/admin/access" element={<Guard roles={['ADMIN', 'SUPER_ADMIN']}><Access /></Guard>} />
+      <Route path="/admin/coverage" element={<Guard roles={['ADMIN', 'SUPER_ADMIN']}><Coverage /></Guard>} />
+      <Route path="/super/rubrics" element={<Guard roles={['ADMIN', 'SUPER_ADMIN']}><Rubrics /></Guard>} />
+      <Route path="/super/resources" element={<Guard roles={['ADMIN', 'SUPER_ADMIN']}><JobsAndCases /></Guard>} />
       <Route path="/super" element={<Guard roles={['SUPER_ADMIN']}><SuperHome /></Guard>} />
       <Route path="/super/modules" element={<Guard roles={['SUPER_ADMIN']}><Modules /></Guard>} />
       <Route path="/super/modules/:id" element={<Guard roles={['SUPER_ADMIN']}><ModuleDetail /></Guard>} />

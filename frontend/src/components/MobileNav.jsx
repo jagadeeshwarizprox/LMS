@@ -64,6 +64,9 @@ const MORE = {
     ['/admin/batches', 'Batches', 'batches'],
     ['/analytics', 'Analytics', 'roadmap'],
     ['/admin/projects', 'Projects', 'projects'],
+    ['/admin/access', 'Access and sharing', 'security'],
+    ['/admin/coverage', 'Recording coverage', 'recordings'],
+    ['/super/resources', 'Jobs and case studies', 'resources'],
     ['/admin/mentors', 'Mentors', 'people'],
     ['/admin/cover', 'Mentor cover', 'people'],
     ['/admin/import', 'Import from the sheet', 'import'],
@@ -72,6 +75,8 @@ const MORE = {
   SUPER_ADMIN: [
     ['/super/courses', 'Courses and pricing', 'library'],
     ['/super/projects', 'Projects', 'projects'],
+    ['/super/rubrics', 'Rubrics', 'queues'],
+    ['/super/resources', 'Jobs and case studies', 'resources'],
     ['/week', 'Weekly sessions', 'sessions'],
     ['/super/people', 'Admin and mentors', 'people'],
     ['/super/form', 'Information form', 'intake'],

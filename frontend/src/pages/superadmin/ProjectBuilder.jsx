@@ -5,6 +5,7 @@ import { TableSkeleton } from '../../components/Skeletons'
 import Drawer from '../../components/Drawer'
 import FileUpload from '../../components/FileUpload'
 import { useToast } from '../../context/ToastContext'
+import { useDialog } from '../../components/Dialog'
 
 /**
  * Authoring a project.
@@ -16,6 +17,7 @@ import { useToast } from '../../context/ToastContext'
  */
 export default function ProjectBuilder() {
   const toast = useToast()
+  const { ask } = useDialog()
   const [rows, setRows] = useState(null)
   const [rubrics, setRubrics] = useState([])
   const [bundles, setBundles] = useState([])
@@ -39,6 +41,37 @@ export default function ProjectBuilder() {
     teamAllowed: false, teamSize: 1, bundleIds: [], resourceFileIds: [],
     resourceLinks: [], stages: [], active: true
   })
+
+  /* always edit the stored copy, not the row the list was drawn from a while ago */
+  const open = async (p) => {
+    try { setEdit(await api.get(`/super/catalogue/projects/${p.id}`)) }
+    catch (e) { toast.push(e.message, 'bad') }
+  }
+
+  /* retired, not deleted: runs already point at it, and their history has to read */
+  const retire = async (p) => {
+    const ok = await ask({
+      title: `Retire ${p.title}?`,
+      body: 'Nobody new can be enrolled on it. Learners already working on it carry on, '
+        + 'and it can be brought back at any time.',
+      confirmLabel: 'Retire'
+    })
+    if (!ok) return
+    try {
+      await api.del(`/super/catalogue/projects/${p.id}`)
+      toast.push('Retired.')
+      load()
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
+
+  const restore = async (p) => {
+    try {
+      const fresh = await api.get(`/super/catalogue/projects/${p.id}`)
+      await api.post('/super/catalogue/projects', { ...fresh, active: true })
+      toast.push('Back in use.')
+      load()
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
 
   if (error) return <LoadError error={error} onRetry={load} />
 
@@ -72,7 +105,12 @@ export default function ProjectBuilder() {
                     <td className="mono">{p.stages?.length || 0}</td>
                     <td className="text-end">
                       {!p.active && <Tag kind="wait">Retired</Tag>}
-                      <button className="btn-quiet sm" onClick={() => setEdit(p)}>Edit</button>
+                      <div className="row-actions d-inline-flex ms-2">
+                        <button className="btn btn-s" onClick={() => open(p)}>Edit</button>
+                        {p.active
+                          ? <button className="btn btn-s" onClick={() => retire(p)}>Retire</button>
+                          : <button className="btn btn-s" onClick={() => restore(p)}>Bring back</button>}
+                      </div>
                     </td>
                   </tr>
                 ))}

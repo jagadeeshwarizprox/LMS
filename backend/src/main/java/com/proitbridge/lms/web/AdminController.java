@@ -22,16 +22,19 @@ public class AdminController {
     private final MentorCoverService cover;
     private final SuperAdminService staff;
     private final CurrentUser current;
+    private final FeatureService features;
+    private final com.proitbridge.lms.repo.LearnerRepository learnerRepo;
 
     public AdminController(AdminService admin, ImportService importer,
                            ProvisioningService provisioning,
                            OnboardingBoardService onboarding, RecordingService recordings,
                            MentorCoverService cover, SuperAdminService staff,
-                           CurrentUser current) {
+                           CurrentUser current, FeatureService features,
+                           com.proitbridge.lms.repo.LearnerRepository learnerRepo) {
         this.admin = admin; this.importer = importer;
         this.provisioning = provisioning; this.onboarding = onboarding;
         this.recordings = recordings; this.cover = cover; this.staff = staff;
-        this.current = current;
+        this.current = current; this.features = features; this.learnerRepo = learnerRepo;
     }
 
     private String actor() { return current.get().email(); }
@@ -168,6 +171,25 @@ public class AdminController {
     @PostMapping("/learners/{id}/resend-credentials")
     public Map<String, Object> resend(@PathVariable String id) {
         return Map.of("sentTo", admin.resendCredentials(id, actor()));
+    }
+
+    /** Of the sessions that should have produced a recording, how many did, per mentor. */
+    @GetMapping("/recordings/coverage")
+    public Map<String, Object> recordingCoverage(@RequestParam(defaultValue = "28") int days) {
+        return recordings.coverage(Math.min(Math.max(days, 1), 180));
+    }
+
+    @GetMapping("/learners/{id}/features")
+    public List<Map<String, Object>> learnerFeatures(@PathVariable String id) {
+        return features.forLearner(learnerRepo.findById(id).orElseThrow(() ->
+                new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND, "Learner not found.")));
+    }
+
+    @DeleteMapping("/learners/{id}/features/{key}")
+    public Map<String, Object> clearOverride(@PathVariable String id, @PathVariable String key) {
+        features.clearOverride(id, key);
+        return Map.of("cleared", true);
     }
 
     @PostMapping("/learners/{id}/features/{key}")

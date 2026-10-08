@@ -67,8 +67,15 @@ public class SecurityConfig {
                  */
                 .requestMatchers("/api/super/catalogue/chapters/*/assignment/**")
                     .hasAnyRole("MENTOR", "ADMIN", "SUPER_ADMIN")
-                .requestMatchers("/api/super/catalogue/rubrics/**")
+                .requestMatchers(HttpMethod.GET, "/api/super/catalogue/rubrics", "/api/super/catalogue/rubrics/**")
                     .hasAnyRole("MENTOR", "ADMIN", "SUPER_ADMIN")
+                /* reading the course tree is open to mentors: the chapter page and the
+                   recordings publish picker both need it. Changing it stays with the office. */
+                .requestMatchers(HttpMethod.GET, "/api/super/catalogue")
+                    .hasAnyRole("MENTOR", "ADMIN", "SUPER_ADMIN")
+                /* the chapter test belongs to chapter editing, which admins already own */
+                .requestMatchers("/api/super/chapters/*/questions", "/api/super/chapters/*/draft-quiz")
+                    .hasAnyRole("ADMIN", "SUPER_ADMIN")
                 .requestMatchers("/api/super/catalogue/**").hasAnyRole("ADMIN", "SUPER_ADMIN")
                 /* the track feature toggles: an admin decides what a track includes, so
                    they own this even though it sits under the super namespace */

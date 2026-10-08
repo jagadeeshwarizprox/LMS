@@ -206,9 +206,6 @@ public class CatalogueController {
 
     /* --------------------------------------------------------------- setup */
 
-    @GetMapping("/setup")
-    public Map<String, Object> setup() { return setupService.checklist(); }
-
     @GetMapping("/readiness")
     public List<Map<String, Object>> readiness() { return setupService.readiness(); }
 
@@ -298,6 +295,9 @@ public class CatalogueController {
         return Map.of("deleted", true);
     }
 
+    @GetMapping("/jobs")
+    public List<JobPost> jobList() { return catalogue.jobList(); }
+
     @PostMapping("/jobs")
     public JobPost saveJob(@RequestBody JobPost body) { return catalogue.saveJob(body, actor()); }
 
@@ -306,6 +306,9 @@ public class CatalogueController {
         catalogue.deleteJob(id, actor());
         return Map.of("deleted", true);
     }
+
+    @GetMapping("/case-studies")
+    public List<CaseStudy> caseStudyList() { return catalogue.caseStudyList(); }
 
     @PostMapping("/case-studies")
     public CaseStudy saveCaseStudy(@RequestBody CaseStudy body) {

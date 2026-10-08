@@ -299,7 +299,9 @@ export function LoadError({ error, onRetry, title = 'That did not load' }) {
     <Empty title={title} icon="risk" action={
       onRetry ? <button className="btn btn-pib" onClick={onRetry}>Try again</button> : null
     }>
-      {error}
+      {/* four pages hand this the Error itself, and React cannot render an object:
+          a failed load crashed the whole screen instead of saying what went wrong */}
+      {typeof error === 'string' ? error : error?.message || 'Something went wrong.'}
     </Empty>
   )
 }

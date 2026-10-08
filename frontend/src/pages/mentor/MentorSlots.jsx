@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
 import { useToast } from '../../context/ToastContext'
+import { useAuth } from '../../context/AuthContext'
 import { TableSkeleton } from '../../components/Skeletons'
 import { useDialog } from '../../components/Dialog'
 import FileUpload from '../../components/FileUpload'
@@ -8,6 +9,9 @@ import { Card, Empty, Page, Tag, fmtDateTime } from '../../components/Ui'
 
 export default function MentorSlots() {
   const toast = useToast()
+  const { user } = useAuth()
+  /* the join check lists every room and who can get in, so the server keeps it to the office */
+  const office = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN'
   const { ask } = useDialog()
   const [rows, setRows] = useState(null)
   const [draft, setDraft] = useState({
@@ -296,6 +300,7 @@ export default function MentorSlots() {
         </div>
       </Card>
 
+      {office && (
       <Card
         title="Can people actually join?"
         actions={
@@ -343,6 +348,7 @@ export default function MentorSlots() {
           </table>
         )}
       </Card>
+      )}
 
       <Card title="Your slots">
         {rows.length === 0 ? <Empty title="No slots released yet" /> : (

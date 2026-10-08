@@ -28,12 +28,30 @@ export default function Recordings() {
   const [materials, setMaterials] = useState({})
   const [attaching, setAttaching] = useState(null)
 
+  const [published, setPublished] = useState([])
   const load = async () => {
+    api.get('/mentor/recordings/published').then(setPublished).catch(() => setPublished([]))
     setRows(await api.get('/mentor/recordings/pending'))
     setTopics(await api.get('/super/catalogue').then((t) => t.modules).catch(() => []))
   }
   useEffect(() => { load() }, [])
   if (!rows) return <TableSkeleton />
+
+  const takeDown = async (r) => {
+    const ok = await ask({
+      title: `Take down "${r.title}"?`,
+      intent: 'danger',
+      body: 'Learners stop seeing it straight away. The session goes back into the queue '
+        + 'above so the right recording can be published.',
+      confirmLabel: 'Take down'
+    })
+    if (!ok) return
+    try {
+      await api.del(`/mentor/recordings/${r.id}`)
+      toast.push('Taken down.')
+      await load()
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
 
   const publish = async (s) => {
     const isRecap = s.recordingKind === 'RECAP'
@@ -159,6 +177,35 @@ export default function Recordings() {
                         ...m, [s.slotId]: [...(m[s.slotId] || []), ...fs]
                       }))}
                     />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+
+      <Card
+        title="Already published"
+        note="Newest first. Take one down if the wrong file went up; the session returns to the queue above."
+      >
+        {published.length === 0 ? (
+          <Empty title="Nothing published yet" />
+        ) : (
+          <table className="table table-pib stacked mb-0">
+            <thead><tr><th>Recording</th><th>Held</th><th>Belongs to</th><th>By</th><th /></tr></thead>
+            <tbody>
+              {published.map((r) => (
+                <tr key={r.id}>
+                  <td data-label="Recording">
+                    <strong>{r.title}</strong>
+                    <div className="small muted">{KIND[r.kind] || r.kind}</div>
+                  </td>
+                  <td data-label="Held" className="mono">{r.heldOn ? fmtDate(r.heldOn) : '\u2014'}</td>
+                  <td data-label="Belongs to" className="small">{r.chapter || r.module || '\u2014'}</td>
+                  <td data-label="By" className="small">{r.uploadedBy || '\u2014'}</td>
+                  <td className="text-end">
+                    <button className="btn btn-s" onClick={() => takeDown(r)}>Take down</button>
                   </td>
                 </tr>
               ))}

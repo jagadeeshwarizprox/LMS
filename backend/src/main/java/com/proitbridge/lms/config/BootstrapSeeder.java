@@ -52,9 +52,15 @@ public class BootstrapSeeder {
         {"ai_teach_back", "AI teach back test", true, true},
         {"cohort_pace", "Cohort pace visibility", false, true},
         {"batch_leaderboard", "Batch leaderboard", false, true},
-        {"induction_gate", "Fixed Tuesday induction gate", false, true},
-        {"top10_guidance", "Top 10 learner guidance", true, true}
+        {"induction_gate", "Fixed Tuesday induction gate", false, true}
     };
+
+    /**
+     * Toggles that were seeded and then never read by anything. A switch that does
+     * nothing is worse than no switch: somebody turns it off and believes it worked.
+     * Removed from a database that already has them.
+     */
+    private static final String[] RETIRED_FEATURES = { "top10_guidance" };
 
     /**
      * Runs on every start, not only the first, and only ever adds what is missing.
@@ -64,6 +70,12 @@ public class BootstrapSeeder {
     @Bean
     ApplicationRunner ensureFeatures(FeatureRepository features) {
         return args -> {
+            for (String gone : RETIRED_FEATURES) {
+                features.findByKey(gone).ifPresent(f -> {
+                    features.delete(f);
+                    log.info("Removed the unused feature toggle {}", gone);
+                });
+            }
             for (Object[] d : FEATURES) {
                 String key = (String) d[0];
                 String label = (String) d[1];

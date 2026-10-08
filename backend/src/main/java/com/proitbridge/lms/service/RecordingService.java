@@ -83,6 +83,8 @@ public class RecordingService {
 
         return slots.findAll().stream()
                 .filter(s -> mentorId == null || mentorId.equals(s.getMentorId()))
+                /* a premium one to one is not library content, so it never waits here */
+                .filter(s -> KIND_FROM_SLOT.containsKey(s.getKind()))
                 .filter(s -> !s.isCancelled())
                 .filter(s -> s.getStartsAt() != null)
                 .filter(s -> s.getStartsAt().plus(s.getDurationMin(), ChronoUnit.MINUTES).isBefore(now))
@@ -238,6 +240,94 @@ public class RecordingService {
         }
         recordings.delete(r);
         activity.log(null, actorEmail, "UNPUBLISH_RECORDING", "recording", r.getTitle());
+    }
+
+    /** Who published a recording, so a mentor can only take down their own. */
+    public String ownerOf(String id) {
+        return recordings.findById(id).map(Recording::getUploadedBy)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such recording."));
+    }
+
+    /**
+     * What has already gone out, newest first. A mentor sees their own; the office
+     * passes null and sees everything. This is where a wrong upload is taken down.
+     */
+    public List<Map<String, Object>> published(String uploaderId) {
+        return recordings.findAllByOrderByHeldOnDesc().stream()
+                .filter(r -> uploaderId == null || uploaderId.equals(r.getUploadedBy()))
+                .limit(100)
+                .map(r -> {
+                    Map<String, Object> m = view(r);
+                    m.put("uploadedById", r.getUploadedBy());
+                    m.put("uploadedBy", r.getUploadedBy() == null ? null
+                            : users.findById(r.getUploadedBy()).map(User::getFullName).orElse(null));
+                    m.put("audience", r.getAudience());
+                    return m;
+                }).collect(Collectors.toList());
+    }
+
+    /**
+     * Recording coverage: of the sessions that should produce a recording, how many
+     * did, per mentor, over the window. The pending queue answers "what do I owe";
+     * this answers "who is behind", which is the question the office asks.
+     */
+    public Map<String, Object> coverage(int days) {
+        Instant now = Instant.now();
+        Instant from = now.minus(Math.max(1, days), ChronoUnit.DAYS);
+        Set<String> recorded = recordings.findAll().stream()
+                .map(Recording::getSlotId).filter(Objects::nonNull).collect(Collectors.toSet());
+
+        List<Slot> held = slots.findAll().stream()
+                .filter(s -> KIND_FROM_SLOT.containsKey(s.getKind()))
+                .filter(s -> !s.isCancelled() && s.getStartsAt() != null)
+                .filter(s -> s.getStartsAt().isAfter(from))
+                .filter(s -> s.getStartsAt().plus(s.getDurationMin(), ChronoUnit.MINUTES).isBefore(now))
+                .collect(Collectors.toList());
+
+        Map<String, List<Slot>> byMentor = held.stream().collect(Collectors.groupingBy(
+                s -> s.getMentorId() == null ? "" : s.getMentorId(), LinkedHashMap::new, Collectors.toList()));
+
+        List<Map<String, Object>> rows = new ArrayList<>();
+        int totalHeld = 0, totalRecorded = 0, totalOverdue = 0;
+        for (var e : byMentor.entrySet()) {
+            int h = e.getValue().size();
+            int r = (int) e.getValue().stream().filter(s -> recorded.contains(s.getId())).count();
+            int overdue = (int) e.getValue().stream()
+                    .filter(s -> !recorded.contains(s.getId()))
+                    .filter(s -> ChronoUnit.DAYS.between(s.getStartsAt(), now) >= 7).count();
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("mentorId", e.getKey().isEmpty() ? null : e.getKey());
+            m.put("mentor", e.getKey().isEmpty() ? "Nobody assigned"
+                    : users.findById(e.getKey()).map(User::getFullName).orElse("Unknown"));
+            m.put("held", h);
+            m.put("recorded", r);
+            m.put("missing", h - r);
+            m.put("overdue", overdue);
+            m.put("percent", h == 0 ? 100 : Math.round(r * 100.0 / h));
+            rows.add(m);
+            totalHeld += h; totalRecorded += r; totalOverdue += overdue;
+        }
+        rows.sort((a, b) -> Integer.compare((int) b.get("missing"), (int) a.get("missing")));
+
+        List<Map<String, Object>> missing = pending(null).stream()
+                .filter(m -> ((Instant) m.get("heldOn")).isAfter(from))
+                .peek(m -> {
+                    String mentorId = held.stream().filter(s -> s.getId().equals(m.get("slotId")))
+                            .map(Slot::getMentorId).findFirst().orElse(null);
+                    m.put("mentor", mentorId == null ? null
+                            : users.findById(mentorId).map(User::getFullName).orElse(null));
+                })
+                .collect(Collectors.toList());
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("days", days);
+        out.put("held", totalHeld);
+        out.put("recorded", totalRecorded);
+        out.put("overdue", totalOverdue);
+        out.put("percent", totalHeld == 0 ? 100 : Math.round(totalRecorded * 100.0 / totalHeld));
+        out.put("byMentor", rows);
+        out.put("missing", missing);
+        return out;
     }
 
     /* ============================================================ the library */

@@ -97,4 +97,32 @@ public class FeatureService {
     public List<Feature> all() {
         return features.findAll();
     }
+
+    /**
+     * One learner's features as the admin needs to see them: what their track gives
+     * them, whether somebody has overridden that, and what actually applies.
+     */
+    public List<Map<String, Object>> forLearner(Learner learner) {
+        boolean premium = learner.getTrackType() == Learner.TrackType.PREMIUM;
+        Map<String, Boolean> set = new HashMap<>();
+        for (var o : overrides.findByLearnerId(learner.getId())) set.put(o.getFeatureKey(), o.isEnabled());
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Feature f : features.findAll()) {
+            boolean track = premium ? f.isForPremium() : f.isForBatch();
+            Boolean over = set.get(f.getKey());
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("key", f.getKey());
+            m.put("label", f.getLabel());
+            m.put("trackDefault", track);
+            m.put("override", over);
+            m.put("effective", over == null ? track : over);
+            out.add(m);
+        }
+        return out;
+    }
+
+    /** Back to whatever the track gives. */
+    public void clearOverride(String learnerId, String key) {
+        overrides.findByLearnerIdAndFeatureKey(learnerId, key).ifPresent(overrides::delete);
+    }
 }

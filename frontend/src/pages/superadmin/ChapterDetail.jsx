@@ -40,12 +40,25 @@ export default function ChapterDetail() {
   const [editing, setEditing] = useState(null)
   const [topicAt, setTopicAt] = useState(0)
 
+  const [loadError, setLoadError] = useState(null)
   const load = async () => {
-    const t = await api.get('/super/catalogue')
-    setTree(t)
+    try {
+      const t = await api.get('/super/catalogue')
+      setTree(t)
+      setLoadError(null)
+    } catch (e) { setLoadError(e.message); return }
+    /* the test is the office's; a mentor is not shown it, so they are not asked for it */
+    if (!authoring) { setQuestions([]); return }
     try { setQuestions(await api.get(`/super/chapters/${id}/questions`)) } catch { setQuestions([]) }
   }
   useEffect(() => { load() }, [id])
+  if (loadError && !tree) {
+    return (
+      <Empty title="That chapter did not load" action={
+        <button className="btn btn-pib" onClick={load}>Try again</button>
+      }>{loadError}</Empty>
+    )
+  }
   if (!tree) return <TableSkeleton />
 
   let m = null, c = null
@@ -251,6 +264,8 @@ export default function ChapterDetail() {
       lede={`${m.name} \u00b7 chapter ${c.position} of ${m.chapters.length}`}
       actions={(
         <>
+          {!authoring && <button className="btn" onClick={() => nav(-1)}>Back</button>}
+          {authoring && <>
           <button className="btn" onClick={() => nav('/super/modules')}>Back to modules</button>
           <button className="btn" onClick={pasteTopics}>Paste an outline</button>
           {c.published
@@ -260,9 +275,13 @@ export default function ChapterDetail() {
             {c.published ? 'Pull back to draft' : 'Release to learners'}
           </button>
           <button className="btn btn-pib" onClick={() => setEditing({ chapterId: id })}>Add a topic</button>
+          </>}
         </>
       )}
     >
+      {/* the topics, the test and the chapter rules are shared content and belong to the
+          office; a mentor opens this page for the assignment below, and sees only that */}
+      {authoring && (
       <div className="ws">
         {/* ------------------------------------------------ topics in this chapter */}
         <div className="wsc ws-l">
@@ -422,6 +441,7 @@ export default function ChapterDetail() {
           </div>
         </div>
       </div>
+      )}
 
       {/* --------------------------------------------------------- the editors */}
       <div id="chapter-assignment" />

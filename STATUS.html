@@ -111,24 +111,24 @@ footer strong { color:var(--ink) }
 </header>
 
 <div class="summary">
-  <div class="card ready"><div class="v">55</div><div class="l">Ready</div></div>
-  <div class="card part"><div class="v">5</div><div class="l">Partly built</div></div>
-  <div class="card none"><div class="v">25</div><div class="l">Not built</div></div>
-  <div class="card wait"><div class="v">7</div><div class="l">Waiting on you</div></div>
+  <div class="card ready"><div class="v">74</div><div class="l">Ready</div></div>
+  <div class="card part"><div class="v">2</div><div class="l">Partly built</div></div>
+  <div class="card none"><div class="v">16</div><div class="l">Not built</div></div>
+  <div class="card wait"><div class="v">6</div><div class="l">Waiting on you</div></div>
 </div>
 
 <div class="bar">
-  <span class="ready" style="width:59.8%"></span>
-  <span class="part" style="width:5.4%"></span>
-  <span class="wait" style="width:7.6%"></span>
-  <span class="none" style="width:27.2%"></span>
+  <span class="ready" style="width:75.5%"></span>
+  <span class="part" style="width:2.0%"></span>
+  <span class="wait" style="width:6.1%"></span>
+  <span class="none" style="width:16.3%"></span>
 </div>
 <div class="barkey">
   <span><i style="background:var(--teal-600)"></i>Ready</span>
   <span><i style="background:#E8A33D"></i>Partly built</span>
   <span><i style="background:var(--blue-500)"></i>Waiting on you</span>
   <span><i style="background:#C6CFDD"></i>Not built</span>
-  <span style="margin-left:auto;color:var(--ink-30)">92 features across 10 areas</span>
+  <span style="margin-left:auto;color:var(--ink-30)">98 features across 10 areas</span>
 </div>
 
 <div class="filters">
@@ -144,7 +144,7 @@ footer strong { color:var(--ink) }
     <header class="area-head">
       <h2>Signing in</h2>
       <span class="area-counts">
-        <span class="mini ready">4 ready</span><span class="mini none">2 not built</span>
+        <span class="mini ready">6 ready</span>
       </span>
     </header>
     <div class="rows">
@@ -165,13 +165,13 @@ footer strong { color:var(--ink) }
         <span class="chip ready">Ready</span>
         <span class="what">Forced password change on first sign in</span>
       </div>
-      <div class="row" data-state="none">
-        <span class="chip none">Not built</span>
-        <span class="what">Forgot password<span class="note">No self-service path at all. An admin has to resend credentials.</span></span>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Forgot password<span class="note">A reset link by email, single use, expires in an hour, three per hour at most.</span></span>
       </div>
-      <div class="row" data-state="none">
-        <span class="chip none">Not built</span>
-        <span class="what">Rate limiting on sign in<span class="note">One script can try passwords all night.</span></span>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Rate limiting on sign in<span class="note">Five tries per account and twenty per network, then a lockout an admin can clear from the register.</span></span>
       </div>
     </div>
   </section>
@@ -210,7 +210,7 @@ footer strong { color:var(--ink) }
     <header class="area-head">
       <h2>Learner: learning</h2>
       <span class="area-counts">
-        <span class="mini ready">12 ready</span><span class="mini none">5 not built</span>
+        <span class="mini ready">12 ready</span><span class="mini none">4 not built</span>
       </span>
     </header>
     <div class="rows">
@@ -279,17 +279,13 @@ footer strong { color:var(--ink) }
         <span class="chip none">Not built</span>
         <span class="what">In-app notifications<span class="note">Email is the only channel.</span></span>
       </div>
-      <div class="row" data-state="none">
-        <span class="chip none">Not built</span>
-        <span class="what">Top 10 guidance<span class="note">The toggle exists, the screen does not.</span></span>
-      </div>
     </div>
   </section>
   <section class="area" data-area>
     <header class="area-head">
       <h2>Learner: cohort</h2>
       <span class="area-counts">
-        <span class="mini ready">4 ready</span><span class="mini none">2 not built</span>
+        <span class="mini ready">5 ready</span><span class="mini none">1 not built</span>
       </span>
     </header>
     <div class="rows">
@@ -314,9 +310,9 @@ footer strong { color:var(--ink) }
         <span class="chip none">Not built</span>
         <span class="what">Sessions I missed<span class="note">Attendance is recorded but nothing reads it for this.</span></span>
       </div>
-      <div class="row" data-state="none">
-        <span class="chip none">Not built</span>
-        <span class="what">Continue watching</span>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Continue watching<span class="note">On the learner home, from real watch positions.</span></span>
       </div>
     </div>
   </section>
@@ -324,7 +320,7 @@ footer strong { color:var(--ink) }
     <header class="area-head">
       <h2>Learner: work</h2>
       <span class="area-counts">
-        <span class="mini ready">3 ready</span><span class="mini part">2 partly built</span><span class="mini none">1 not built</span>
+        <span class="mini ready">4 ready</span><span class="mini part">1 partly built</span><span class="mini none">1 not built</span>
       </span>
     </header>
     <div class="rows">
@@ -337,9 +333,9 @@ footer strong { color:var(--ink) }
         <span class="chip ready">Ready</span>
         <span class="what">File upload<span class="note">Real uploads, not links to somebody&#x27;s Drive.</span></span>
       </div>
-      <div class="row" data-state="part">
-        <span class="chip part">Partly built</span>
-        <span class="what">Projects<span class="note">Submit and review only. No briefs to work from.</span></span>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Projects<span class="note">Briefs, six stages, mentor review per stage, in the project workspace.</span></span>
       </div>
       <div class="row" data-state="part">
         <span class="chip part">Partly built</span>
@@ -359,7 +355,7 @@ footer strong { color:var(--ink) }
     <header class="area-head">
       <h2>Mentor</h2>
       <span class="area-counts">
-        <span class="mini ready">9 ready</span><span class="mini part">2 partly built</span><span class="mini none">3 not built</span>
+        <span class="mini ready">15 ready</span><span class="mini none">1 not built</span>
       </span>
     </header>
     <div class="rows">
@@ -400,25 +396,33 @@ footer strong { color:var(--ink) }
         <span class="chip ready">Ready</span>
         <span class="what">Cover when a mentor is away<span class="note">Nothing is reassigned. Admin arranges it.</span></span>
       </div>
-      <div class="row" data-state="part">
-        <span class="chip part">Partly built</span>
-        <span class="what">Attendance and session notes<span class="note">Endpoints work, no screen yet.</span></span>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Attendance and session notes<span class="note">Its own screen under Learners.</span></span>
       </div>
-      <div class="row" data-state="part">
-        <span class="chip part">Partly built</span>
-        <span class="what">Resume review<span class="note">Endpoint works, no screen yet.</span></span>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Resume review<span class="note">On the learner record, Resume tab.</span></span>
       </div>
-      <div class="row" data-state="none">
-        <span class="chip none">Not built</span>
-        <span class="what">Batch view for mentors</span>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Batch view for mentors<span class="note">My batches.</span></span>
       </div>
-      <div class="row" data-state="none">
-        <span class="chip none">Not built</span>
-        <span class="what">Project briefs to publish</span>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Project briefs to publish<span class="note">Authored once under Projects, with six stages and a rubric each.</span></span>
       </div>
       <div class="row" data-state="none">
         <span class="chip none">Not built</span>
         <span class="what">Structured mock feedback and question bank</span>
+      </div>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Reopen a chapter test<span class="note">From the learner record. The learner is told.</span></span>
+      </div>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Take down a recording<span class="note">Mentors their own, the office any. The session returns to the queue.</span></span>
       </div>
     </div>
   </section>
@@ -426,7 +430,7 @@ footer strong { color:var(--ink) }
     <header class="area-head">
       <h2>Admin</h2>
       <span class="area-counts">
-        <span class="mini ready">7 ready</span><span class="mini part">1 partly built</span><span class="mini none">5 not built</span>
+        <span class="mini ready">11 ready</span><span class="mini none">5 not built</span>
       </span>
     </header>
     <div class="rows">
@@ -453,15 +457,15 @@ footer strong { color:var(--ink) }
       </div>
       <div class="row" data-state="ready">
         <span class="chip ready">Ready</span>
-        <span class="what">Access and sharing<span class="note">Flags, video library, playback log, suspend.</span></span>
+        <span class="what">Access and sharing<span class="note">Flags, playback log, video library with rotate, suspend from the register or a flag.</span></span>
       </div>
       <div class="row" data-state="ready">
         <span class="chip ready">Ready</span>
         <span class="what">Mentor cover</span>
       </div>
-      <div class="row" data-state="part">
-        <span class="chip part">Partly built</span>
-        <span class="what">Recording coverage report<span class="note">Endpoint works, no screen yet.</span></span>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Recording coverage report<span class="note">Held against recorded, per mentor, with what is still missing. Admin, Teaching.</span></span>
       </div>
       <div class="row" data-state="none">
         <span class="chip none">Not built</span>
@@ -483,13 +487,25 @@ footer strong { color:var(--ink) }
         <span class="chip none">Not built</span>
         <span class="what">Dropouts and refunds<span class="note">Out of scope for now, by your call.</span></span>
       </div>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Learner features by hand<span class="note">Override any track feature for one learner, or put it back to the track default.</span></span>
+      </div>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Fast forward<span class="note">Mark modules review only. Modules rated Advanced in the intake form are suggested.</span></span>
+      </div>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Suspend and deactivate<span class="note">Suspend ends every session now. Deactivate switches the account off and keeps every record.</span></span>
+      </div>
     </div>
   </section>
   <section class="area" data-area>
     <header class="area-head">
       <h2>Super admin</h2>
       <span class="area-counts">
-        <span class="mini ready">7 ready</span><span class="mini none">4 not built</span>
+        <span class="mini ready">12 ready</span><span class="mini none">2 not built</span>
       </span>
     </header>
     <div class="rows">
@@ -530,13 +546,13 @@ footer strong { color:var(--ink) }
         <span class="chip ready">Ready</span>
         <span class="what">Activity log</span>
       </div>
-      <div class="row" data-state="none">
-        <span class="chip none">Not built</span>
-        <span class="what">Rubric editor<span class="note">Two rubrics are seeded, no screen to change them.</span></span>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Rubric editor<span class="note">Criteria, guidance and weights per rubric; switch one off without breaking old marks.</span></span>
       </div>
-      <div class="row" data-state="none">
-        <span class="chip none">Not built</span>
-        <span class="what">Job posts and case studies screens<span class="note">Seeded data, no editor.</span></span>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Job posts and case studies screens<span class="note">One editor with two tabs, for admin and super admin.</span></span>
       </div>
       <div class="row" data-state="none">
         <span class="chip none">Not built</span>
@@ -546,13 +562,17 @@ footer strong { color:var(--ink) }
         <span class="chip none">Not built</span>
         <span class="what">Analytics and export</span>
       </div>
+      <div class="row" data-state="ready">
+        <span class="chip ready">Ready</span>
+        <span class="what">Module order<span class="note">Move up and down on Modules and chapters.</span></span>
+      </div>
     </div>
   </section>
   <section class="area" data-area>
     <header class="area-head">
       <h2>Platform</h2>
       <span class="area-counts">
-        <span class="mini ready">4 ready</span><span class="mini none">3 not built</span><span class="mini wait">1 waiting on you</span>
+        <span class="mini ready">4 ready</span><span class="mini part">1 partly built</span><span class="mini none">2 not built</span><span class="mini wait">1 waiting on you</span>
       </span>
     </header>
     <div class="rows">
@@ -581,9 +601,9 @@ footer strong { color:var(--ink) }
         <span class="chip none">Not built</span>
         <span class="what">Email templates as data<span class="note">They are string literals in Java.</span></span>
       </div>
-      <div class="row" data-state="none">
-        <span class="chip none">Not built</span>
-        <span class="what">Any test suite<span class="note">The biggest gap. Everything is verified by hand.</span></span>
+      <div class="row" data-state="part">
+        <span class="chip part">Partly built</span>
+        <span class="what">Any test suite<span class="note">A role check and a wiring check now run in seconds and catch the bugs found this round. There are still no unit tests.</span></span>
       </div>
       <div class="row" data-state="wait">
         <span class="chip wait">Waiting on you</span>
@@ -595,7 +615,7 @@ footer strong { color:var(--ink) }
     <header class="area-head">
       <h2>Waiting on you</h2>
       <span class="area-counts">
-        <span class="mini wait">6 waiting on you</span>
+        <span class="mini wait">5 waiting on you</span>
       </span>
     </header>
     <div class="rows">
@@ -624,13 +644,14 @@ footer strong { color:var(--ink) }
   </section>
 
 <footer>
-  <strong>The one that matters.</strong> The backend has never been compiled on a machine
-  with Maven access, so <code>mvn clean package</code> is the first real test. Four offline
-  checkers run clean, and they caught three faults that would each have stopped the build
-  on its first line, but they cannot see anything that needs the Spring jars.<br><br>
-  <strong>The honest weak point.</strong> There is no test suite of any kind. Every feature
-  above was verified by reading the code and clicking the screen. That does not survive a
-  second developer, or next month.
+  <strong>Version 2, 8 October 2026.</strong> Every screen call is served (<code>tools/check-wiring.py</code>),
+  every screen call is allowed for the roles that page is open to (<code>tools/check-roles.py</code>, new),
+  the whole backend compiles against stubs (<code>tools/offline-compile/verify.sh</code>), and the
+  frontend builds. See <code>CHANGES-2026-10-08.md</code>.<br><br>
+  <strong>The one that matters.</strong> The backend has still never been compiled with Maven,
+  so <code>mvn clean package</code> on a machine with Maven access is the first real test.<br><br>
+  <strong>The honest weak point.</strong> There are still no unit or integration tests. The two
+  checks above catch wiring and permission mistakes, not wrong behaviour.
 </footer>
 
 </div>

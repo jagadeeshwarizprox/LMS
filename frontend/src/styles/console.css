@@ -602,3 +602,14 @@ a.asset b, a.asset span { text-decoration: none; }
 }
 .board-act:hover { color: var(--navy-800); border-color: var(--line); background: var(--surface-2); }
 @media (hover: none) { .board-acts { opacity: 1; } }
+
+/* fast forward picker: a chip per module, ticked ones are review only */
+.ff-chip { display:inline-flex; align-items:center; gap:8px; padding:6px 12px;
+  border:1px solid var(--line, #E6EBF3); border-radius:999px; cursor:pointer;
+  font-size:.86rem; background:var(--surface, #fff) }
+.ff-chip input { margin:0 }
+.ff-chip.on { border-color:var(--blue-500); background:var(--blue-050) }
+
+/* recording coverage: one thin bar per mentor */
+.cov-bar { width:120px; height:6px; border-radius:999px; background:var(--line); overflow:hidden }
+.cov-bar i { display:block; height:100%; background:var(--blue-500) }

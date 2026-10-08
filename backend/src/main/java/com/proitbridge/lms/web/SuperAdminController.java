@@ -6,6 +6,7 @@ import com.proitbridge.lms.service.ActivityService;
 import com.proitbridge.lms.service.Validate;
 import com.proitbridge.lms.service.CatalogueService;
 import com.proitbridge.lms.service.FeatureService;
+import com.proitbridge.lms.service.SessionService;
 import com.proitbridge.lms.service.SuperAdminService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -23,10 +24,12 @@ public class SuperAdminController {
     private final ActivityService activity;
     private final CatalogueService catalogue;
     private final CurrentUser current;
+    private final SessionService sessions;
 
     public SuperAdminController(SuperAdminService svc, FeatureService featureService,
                                 ActivityService activity, CatalogueService catalogue,
-                                CurrentUser current) {
+                                CurrentUser current, SessionService sessions) {
+        this.sessions = sessions;
         this.svc = svc;
         this.featureService = featureService;
         this.activity = activity;
@@ -38,9 +41,6 @@ public class SuperAdminController {
 
 
     /** Read only. Everything that changes the catalogue lives under /catalogue. */
-    @GetMapping("/modules")
-    public List<CourseModule> modules() { return catalogue.moduleList(); }
-
     @GetMapping("/modules/{id}/chapters")
     public List<Chapter> chapters(@PathVariable String id) {
         return catalogue.chapterList(id);
@@ -151,10 +151,14 @@ public class SuperAdminController {
                 Boolean.TRUE.equals(body.get("forBatch")), actor());
     }
 
-    @DeleteMapping("/learners/{id}")
-    public Map<String, Object> deleteLearner(@PathVariable String id) {
-        svc.deleteLearner(id, actor());
-        return Map.of("deleted", true);
+    /** Switches a learner off or back on. Never a delete: every record stays. */
+    @PostMapping("/learners/{id}/active")
+    public Map<String, Object> setLearnerActive(@PathVariable String id,
+                                                @RequestBody Map<String, Boolean> body) {
+        boolean on = Boolean.TRUE.equals(body.get("active"));
+        Map<String, Object> out = svc.setLearnerActive(id, on, actor());
+        if (!on) sessions.closeAllFor((String) out.get("userId"), "DEACTIVATED");
+        return out;
     }
 
     @GetMapping("/activity")

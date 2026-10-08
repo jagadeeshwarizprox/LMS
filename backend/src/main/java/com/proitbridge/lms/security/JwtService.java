@@ -17,8 +17,27 @@ public class JwtService {
     private final SecretKey key;
     private final long ttlMillis;
 
+    /** The values application.yml and docker-compose.yml fall back to when JWT_SECRET is not set. */
+    static final java.util.Set<String> DEV_SECRETS = java.util.Set.of(
+            "pib-lms-development-secret-key-change-me-please-32b",
+            "change-me-to-a-real-secret-at-least-32-chars");
+
     public JwtService(@Value("${lms.jwt.secret}") String secret,
-                      @Value("${lms.jwt.ttl-minutes}") long ttlMinutes) {
+                      @Value("${lms.jwt.ttl-minutes}") long ttlMinutes,
+                      @Value("${lms.app.base-url:http://localhost:5173}") String baseUrl) {
+        /*
+         * The development secret is in the repository, so anybody who has read it can sign
+         * a super admin token for a server still using it. Locally that does not matter.
+         * Anywhere else it is an open door, so a server whose public address is not
+         * localhost refuses to start until a real secret is set.
+         */
+        boolean local = baseUrl == null || baseUrl.contains("localhost") || baseUrl.contains("127.0.0.1");
+        if (DEV_SECRETS.contains(secret) && !local) {
+            throw new IllegalStateException(
+                    "JWT_SECRET is still the development default, and LMS_BASE_URL (" + baseUrl
+                    + ") is not localhost. Set JWT_SECRET to a private value before going live, "
+                    + "for example the output of: openssl rand -base64 48");
+        }
         byte[] bytes = secret.getBytes(StandardCharsets.UTF_8);
         /*
          * HS256 needs at least 256 bits of key. The library throws for a shorter one,

@@ -123,11 +123,8 @@ public class LearnerController {
     @GetMapping("/mocks")
     public List<MockRequest> mocks() { return svc.myMocks(uid()); }
 
-    @GetMapping("/projects")
-    public List<ProjectWork> projects() { return svc.myProjects(uid()); }
-
-    @PostMapping("/projects")
-    public ProjectWork submitProject(@RequestBody ProjectWork body) { return svc.submitProject(uid(), body); }
+    /* the old free-form project submission lived here. Projects now run through the
+       project workspace (/api/learner/project-runs), and nothing called these. */
 
     @GetMapping("/tasks/{id}")
     public Map<String, Object> taskThread(@PathVariable String id) {

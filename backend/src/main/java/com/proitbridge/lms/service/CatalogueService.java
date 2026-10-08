@@ -1113,6 +1113,19 @@ public class CatalogueService {
         activity.log(null, actorEmail, "DELETE_LINK", "link", id);
     }
 
+    /** Every post, newest first, for the editor. Learners get their own filtered list. */
+    public List<JobPost> jobList() {
+        List<JobPost> all = new ArrayList<>(jobs.findAll());
+        all.sort((a, b) -> {
+            if (a.getPostedAt() == null) return 1;
+            if (b.getPostedAt() == null) return -1;
+            return b.getPostedAt().compareTo(a.getPostedAt());
+        });
+        return all;
+    }
+
+    public List<CaseStudy> caseStudyList() { return caseStudies.findAll(); }
+
     public JobPost saveJob(JobPost body, String actorEmail) {
         JobPost saved = jobs.save(body);
         activity.log(null, actorEmail, "SAVE_JOB", "job", saved.getTitle());

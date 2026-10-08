@@ -67,6 +67,20 @@ export default function Modules() {
     } catch (e) { toast.push(e.message, 'bad') }
   }
 
+  /* the order learners meet modules in; it follows the catalogue position */
+  const move = async (m, dir) => {
+    const ids = tree.modules.map((x) => x.id)
+    const at = ids.indexOf(m.id)
+    const to = at + dir
+    if (at < 0 || to < 0 || to >= ids.length) return
+    ;[ids[at], ids[to]] = [ids[to], ids[at]]
+    try {
+      await api.post('/super/catalogue/modules/reorder', { ids })
+      setOpen(open === -1 ? -1 : to)
+      await load()
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
+
   const needle = q.trim().toLowerCase()
   const rows = tree.modules.filter((m) => !needle || m.name.toLowerCase().includes(needle)
     || (m.code || '').toLowerCase().includes(needle))
@@ -142,6 +156,20 @@ export default function Modules() {
 
             {isOpen && (
               <div className="tree-kids">
+                {!needle && tree.modules.length > 1 && (
+                  <div className="d-flex gap-2 justify-content-end px-2 pb-2">
+                    <span className="tiny muted align-self-center me-auto">
+                      Position {i + 1} of {tree.modules.length}
+                    </span>
+                    <button className="btn btn-s" disabled={i === 0} onClick={() => move(m, -1)}>
+                      <Icon name="up" size={14} /> Move up
+                    </button>
+                    <button className="btn btn-s" disabled={i === tree.modules.length - 1}
+                      onClick={() => move(m, 1)}>
+                      <Icon name="down" size={14} /> Move down
+                    </button>
+                  </div>
+                )}
                 {m.chapters.map((c, j) => (
                   <button className="kid" key={c.id} onClick={() => nav(`/super/chapters/${c.id}`)}>
                     <span className="mono tiny" style={{ color: 'var(--ink-30)' }}>C{j + 1}</span>

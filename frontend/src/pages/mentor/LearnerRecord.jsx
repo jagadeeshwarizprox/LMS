@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { api, downloadFile } from '../../api/client'
 import { useToast } from '../../context/ToastContext'
 import { useAuth } from '../../context/AuthContext'
@@ -7,6 +7,9 @@ import TabBar from '../../components/TabBar'
 import Avatar from '../../components/Avatar'
 import { Bars, Ring, Trend } from '../../components/Charts'
 import MovePanel from '../../components/MovePanel'
+import FastForwardPanel from '../../components/FastForwardPanel'
+import LearnerFeaturesPanel from '../../components/LearnerFeaturesPanel'
+import { useDialog } from '../../components/Dialog'
 import Icon from '../../components/Icon'
 import { TableSkeleton } from '../../components/Skeletons'
 import { Bar, Card, Empty, LoadError, Page, StatusTag, Tag, fmtDate, fmtDateTime } from '../../components/Ui'
@@ -250,11 +253,13 @@ export default function LearnerRecord() {
         </>
       )}
 
-      {tab === 'learning' && <LearningTab data={data.learning} />}
+      {tab === 'learning' && <LearningTab data={data.learning} learnerId={id} onChanged={load} />}
 
       {tab === 'move' && (
         <>
           <MovePanel learnerId={id} onMoved={load} />
+          {staff && <FastForwardPanel learnerId={id} />}
+          {staff && <LearnerFeaturesPanel learnerId={id} />}
           {mentorHistory.length > 0 && (
             <Card title="Mentor history"
               note="Nobody is deleted when they are switched off, so every handover stays readable.">
@@ -507,8 +512,28 @@ function mins(v) {
  * different conversations, and the product knew which was which all along without ever
  * showing anyone.
  */
-function LearningTab({ data }) {
+function LearningTab({ data, learnerId, onChanged }) {
   const [open, setOpen] = useState(() => new Set())
+  const toast = useToast()
+  const { ask } = useDialog()
+  const nav = useNavigate()
+
+  /* a test can be sat once for the record; reopening clears the attempts so they can
+     sit it again, and the learner is told. Their mentor or the office decides. */
+  const reopenTest = async (c) => {
+    const ok = await ask({
+      title: `Reopen the test on ${c.title}?`,
+      body: 'Their attempts on this chapter test are cleared and they can sit it again. '
+        + 'The learner gets a message saying so.',
+      confirmLabel: 'Reopen test'
+    })
+    if (!ok) return
+    try {
+      await api.post(`/mentor/learners/${learnerId}/chapters/${c.id}/reopen-test`, {})
+      toast.push('Test reopened. They have been told.')
+      onChanged?.()
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
 
   if (!data?.summary?.hasCourse) {
     return (
@@ -603,6 +628,17 @@ function LearningTab({ data }) {
                   <Icon name="chevron" className={isOpen ? 'rot' : ''} size={15} />
                 </button>
 
+                {isOpen && (
+                  <div className="d-flex justify-content-end gap-2 px-3 pt-2">
+                    {/* the one way a mentor reaches the chapter page, where the assignment is set */}
+                    <button className="btn btn-s" onClick={() => nav(`/super/chapters/${c.id}`)}>
+                      Chapter assignment
+                    </button>
+                    {c.hasTest && c.quizScore != null && (
+                      <button className="btn btn-s" onClick={() => reopenTest(c)}>Reopen test</button>
+                    )}
+                  </div>
+                )}
                 {isOpen && (
                   <ul className="learn-topics">
                     {c.topics.length === 0 && <li className="muted small">No videos in this chapter yet.</li>}

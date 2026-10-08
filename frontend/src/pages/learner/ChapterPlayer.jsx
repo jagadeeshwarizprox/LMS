@@ -64,6 +64,13 @@ export default function ChapterPlayer() {
 
   useEffect(() => { load() }, [id])
 
+  /* live sessions that covered this chapter, shown on the chapter itself so a learner
+     finds the recap before they open a topic, not only after */
+  const [chapterSessions, setChapterSessions] = useState([])
+  useEffect(() => {
+    api.get(`/learner/chapters/${id}/recordings`).then(setChapterSessions).catch(() => setChapterSessions([]))
+  }, [id])
+
   /* a failed load leaves data unset, so guard on the shape rather than on truthiness */
   if (error) {
     return (
@@ -193,6 +200,33 @@ export default function ChapterPlayer() {
               </div>
             )}
           </Card>
+          {chapterSessions.length > 0 && (
+            <Card title="Live sessions on this chapter" note="Recaps and doubt sessions that covered it.">
+              {chapterSessions.map((r) => (
+                <div className="rec" key={r.id}>
+                  <button
+                    className="rec-head"
+                    onClick={() => setPlayingSession(playingSession === r.id ? null : r.id)}
+                  >
+                    <span className="rec-icon"><Icon name="recordings" size={16} /></span>
+                    <span className="rec-body">
+                      <strong>{r.title}</strong>
+                      <span className="small muted d-block">
+                        {fmtDate(r.heldOn)}{r.durationMin ? ` \u00b7 ${r.durationMin} min` : ''}
+                      </span>
+                    </span>
+                    <span className="rec-action">{playingSession === r.id ? 'Close' : 'Watch'}</span>
+                  </button>
+                  {playingSession === r.id && (
+                    <div className="rec-open">
+                      <SecurePlayer videoRef={r.videoRef} poster={r.title} />
+                      {r.coveredSummary && <p className="small mt-3 mb-0">{r.coveredSummary}</p>}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </Card>
+          )}
           <FaqBlock placement="CHAPTER" />
         </>
       )}

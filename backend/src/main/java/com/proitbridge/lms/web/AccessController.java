@@ -1,7 +1,10 @@
 package com.proitbridge.lms.web;
 
+import com.proitbridge.lms.domain.User;
 import com.proitbridge.lms.domain.Video;
 import com.proitbridge.lms.domain.VideoAccessLog;
+import com.proitbridge.lms.repo.UserRepository;
+import com.proitbridge.lms.repo.VideoRepository;
 import com.proitbridge.lms.security.CurrentUser;
 import com.proitbridge.lms.service.AnomalyService;
 import com.proitbridge.lms.service.LoginGuardService;
@@ -9,8 +12,12 @@ import com.proitbridge.lms.service.SessionService;
 import com.proitbridge.lms.service.VideoAccessService;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /** Access and sharing: the video library, the flags, the devices, the kill switch. */
 @RestController
@@ -22,12 +29,15 @@ public class AccessController {
     private final SessionService sessions;
     private final LoginGuardService guard;
     private final CurrentUser current;
+    private final UserRepository users;
+    private final VideoRepository videoRepo;
 
     public AccessController(VideoAccessService videos, AnomalyService anomalies,
                             SessionService sessions, LoginGuardService guard,
-                            CurrentUser current) {
+                            CurrentUser current, UserRepository users, VideoRepository videoRepo) {
         this.videos = videos; this.anomalies = anomalies;
         this.sessions = sessions; this.guard = guard; this.current = current;
+        this.users = users; this.videoRepo = videoRepo;
     }
 
     private String actor() { return current.get().email(); }
@@ -44,8 +54,37 @@ public class AccessController {
         return videos.rotate(id, body.get("externalId"), actor());
     }
 
+    /**
+     * The playback log, with a name and a title on every row. The raw rows carry only
+     * ids, and a screen full of ids tells the office nothing about who shared what.
+     */
     @GetMapping("/grants")
-    public List<VideoAccessLog> grants() { return videos.recentGrants(); }
+    public List<Map<String, Object>> grants() {
+        List<VideoAccessLog> rows = videos.recentGrants();
+        Set<String> userIds = rows.stream().map(VideoAccessLog::getUserId)
+                .filter(x -> x != null).collect(Collectors.toSet());
+        Set<String> videoIds = rows.stream().map(VideoAccessLog::getVideoId)
+                .filter(x -> x != null).collect(Collectors.toSet());
+        Map<String, User> who = new HashMap<>();
+        users.findAllById(userIds).forEach(u -> who.put(u.getId(), u));
+        Map<String, String> title = new HashMap<>();
+        videoRepo.findAllById(videoIds).forEach(v -> title.put(v.getId(), v.getTitle()));
+        return rows.stream().map(r -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            User u = r.getUserId() == null ? null : who.get(r.getUserId());
+            m.put("id", r.getId());
+            m.put("userId", r.getUserId());
+            m.put("name", u == null ? null : u.getFullName());
+            m.put("email", u == null ? null : u.getEmail());
+            m.put("video", title.getOrDefault(r.getVideoId(), null));
+            m.put("issuedAt", r.getIssuedAt());
+            m.put("outcome", r.getOutcome());
+            m.put("reason", r.getReason());
+            m.put("ip", r.getIp());
+            m.put("deviceId", r.getDeviceId());
+            return m;
+        }).toList();
+    }
 
     /** Accounts currently shut out by the rate limit, and the way to clear one. */
     @GetMapping("/lockouts")
