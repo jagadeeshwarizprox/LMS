@@ -22,6 +22,8 @@ export default function MentorSlots() {
   const [rec, setRec] = useState({ title: '', videoLink: '', slotId: '', notes: '' })
   const [recFile, setRecFile] = useState(null)
   const [check, setCheck] = useState(null)
+  /* publish and release each post once; a double press made two of them */
+  const [busy, setBusy] = useState(null)
 
   const load = async () => {
     setRows(await api.get('/mentor/slots'))
@@ -63,6 +65,8 @@ export default function MentorSlots() {
 
   const publish = async () => {
     if (recLinkProblem) { toast.push(recLinkProblem, 'bad'); return }
+    if (busy) return
+    setBusy('publish')
     try {
       await api.post('/mentor/recordings', {
         title: rec.title,
@@ -76,6 +80,7 @@ export default function MentorSlots() {
       setRecFile(null)
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
+    finally { setBusy(null) }
   }
 
   const set = (k) => (e) => setDraft((d) => ({ ...d, [k]: e.target.value }))
@@ -86,6 +91,8 @@ export default function MentorSlots() {
     : null
 
   const release = async () => {
+    if (busy) return
+    setBusy('release')
     try {
       await api.post('/mentor/slots', {
         ...draft,
@@ -97,6 +104,7 @@ export default function MentorSlots() {
       setDraft((d) => ({ ...d, startsAt: '', joinUrl: '' }))
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
+    finally { setBusy(null) }
   }
 
   /**
@@ -203,7 +211,9 @@ export default function MentorSlots() {
           </div>
           <div className="col-md-2">
             <button className="btn btn-pib w-100" onClick={publish}
-              disabled={!rec.title || (!rec.videoLink.trim() && !recFile)}>Publish</button>
+              disabled={!rec.title || (!rec.videoLink.trim() && !recFile) || busy === 'publish'}>
+              {busy === 'publish' ? 'Publishing\u2026' : 'Publish'}
+            </button>
           </div>
 
           {/* the other half of the choice: a file, for a session nobody put on YouTube */}
@@ -215,6 +225,7 @@ export default function MentorSlots() {
               label="Choose a file"
               accept=".mp4,.webm,.mov,.m4v,.pdf,.doc,.docx,.ppt,.pptx"
               onUploaded={(f) => { setRecFile(f); if (!rec.title) setRec((r) => ({ ...r, title: f.filename })) }}
+              onRemoved={(f) => setRecFile((cur) => (cur?.id === f.id ? null : cur))}
             />
             {recFile && (
               <button className="btn btn-quiet btn-sm mt-2" onClick={() => setRecFile(null)}>
@@ -295,7 +306,9 @@ export default function MentorSlots() {
           </div>
           <div className="col-md-2">
             <button className="btn btn-pib w-100" onClick={release}
-              disabled={!draft.startsAt || !!slotLinkProblem}>Release</button>
+              disabled={!draft.startsAt || !!slotLinkProblem || busy === 'release'}>
+              {busy === 'release' ? 'Releasing\u2026' : 'Release'}
+            </button>
           </div>
         </div>
       </Card>

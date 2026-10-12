@@ -2,6 +2,8 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
 import java.time.Instant;
 import java.util.*;
@@ -10,6 +12,14 @@ import java.util.*;
  * Any deliberate move of a learner: track, batch, course, mentor, or on hold.
  * Nothing is deleted by a move, so the record survives every one of them.
  */
+/*
+ * Indexes for twenty thousand learners and their logs.
+ *
+ * Provisioning asks whether a learner was moved by hand, which is learner plus kind.
+ */
+@CompoundIndexes({
+    @CompoundIndex(name = "learner_kind", def = "{'learnerId': 1, 'kind': 1}")
+})
 @Document("learner_moves")
 public class LearnerMove {
     @Id private String id;

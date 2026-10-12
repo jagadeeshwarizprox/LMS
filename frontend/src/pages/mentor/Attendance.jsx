@@ -55,13 +55,21 @@ export default function Attendance() {
   const mark = async (learnerId, state) => {
     /* marked one at a time and saved immediately: a mentor doing this from a phone
        after a session should never lose it to a missed save */
+    const was = sheet?.rows.find((r) => r.learnerId === learnerId)?.state || ''
     setSheet((s) => ({
       ...s,
       rows: s.rows.map((r) => (r.learnerId === learnerId ? { ...r, state } : r))
     }))
     try {
       await api.post(`/mentor/slots/${open.id}/attendance`, { learnerId, state })
-    } catch (e) { toast.push(e.message, 'bad') }
+    } catch (e) {
+      /* the sheet showed the mark as saved when it was not; put back what is stored */
+      setSheet((s) => ({
+        ...s,
+        rows: s.rows.map((r) => (r.learnerId === learnerId ? { ...r, state: was } : r))
+      }))
+      toast.push(e.message, 'bad')
+    }
   }
 
   const markRest = async (state) => {

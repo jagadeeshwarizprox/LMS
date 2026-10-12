@@ -64,7 +64,8 @@ public class MentorController {
 
     @PostMapping("/resumes/{id}/reviewed")
     public Map<String, Object> resumeReviewed(@PathVariable String id) {
-        desk.markResumeReviewed(id);
+        AuthUser me = current.get();
+        desk.markResumeReviewed(id, me.id(), me.role());
         return Map.of("reviewed", true);
     }
 
@@ -80,7 +81,7 @@ public class MentorController {
         return tasks.assign(new AssignmentService.NewTask(
                 (String) body.get("title"), (String) body.get("brief"), due,
                 (String) body.get("rubricId"), ids, (String) body.get("batchId"),
-                (String) body.get("trackScope")), me.id(), me.name());
+                (String) body.get("trackScope")), me.id(), me.name(), me.role());
     }
 
     @GetMapping("/tasks/{id}")
@@ -125,15 +126,22 @@ public class MentorController {
        ownership rule per row. These three had no permission check at all: any mentor
        could pause any schedule in the org by id. */
 
+    /* The four writes on one session below had no ownership check, so any mentor could
+       call off, move, mark or annotate somebody else's session by id. They use
+       assertMayRunSlot: the host, a mentor covering for the host, or the office. Not the
+       create rule, which refused every mentor whenever the office plans the week. */
+
     @PostMapping("/slots/{id}/cancel")
     public Slot cancelSlot(@PathVariable String id, @RequestBody Map<String, String> body) {
         var me = current.get();
+        schedule.assertMayRunSlot(me.id(), me.role(), id);
         return schedule.cancel(id, body.get("reason"), me.id(), me.name());
     }
 
     @PostMapping("/slots/{id}/reschedule")
     public Slot rescheduleSlot(@PathVariable String id, @RequestBody Map<String, String> body) {
         var me = current.get();
+        schedule.assertMayRunSlot(me.id(), me.role(), id);
         return schedule.reschedule(id, Instant.parse(body.get("startsAt")), me.id(), me.name());
     }
 
@@ -144,12 +152,16 @@ public class MentorController {
 
     @PostMapping("/slots/{id}/attendance")
     public Map<String, Object> markAttendance(@PathVariable String id, @RequestBody Map<String, String> body) {
+        AuthUser me = current.get();
+        schedule.assertMayRunSlot(me.id(), me.role(), id);
         schedule.mark(id, body.get("learnerId"), body.getOrDefault("state", "PRESENT"));
         return Map.of("ok", true);
     }
 
     @PostMapping("/slots/{id}/notes")
     public Slot sessionNotes(@PathVariable String id, @RequestBody Map<String, String> body) {
+        AuthUser me = current.get();
+        schedule.assertMayRunSlot(me.id(), me.role(), id);
         return schedule.saveNotes(id, body.get("notes"));
     }
 
@@ -166,6 +178,11 @@ public class MentorController {
     @PostMapping("/learners/{id}/message")
     public Map<String, Object> message(@PathVariable String id, @RequestBody Map<String, String> body) {
         var me = current.get();
+        /* a mentor writes to their own learners, and to those they are covering */
+        if (!isOffice(me) && !visibleIds(me).contains(id)) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.FORBIDDEN, "That learner is not assigned to you.");
+        }
         chat.send(id, me.id(), me.name(), body.getOrDefault("subject", "A note from your mentor"),
                 body.get("body"), body.getOrDefault("kind", "MESSAGE"));
         return Map.of("sent", true);
@@ -175,9 +192,30 @@ public class MentorController {
     public Map<String, Object> broadcast(@RequestBody Map<String, Object> body) {
         var me = current.get();
         @SuppressWarnings("unchecked")
-        List<String> ids = (List<String>) body.getOrDefault("learnerIds", List.of());
+        List<String> asked = (List<String>) body.getOrDefault("learnerIds", List.of());
+        /* anyone not visible to this mentor is dropped rather than written to */
+        java.util.Set<String> visible = isOffice(me) ? null : visibleIds(me);
+        List<String> ids = visible == null ? asked
+                : asked.stream().filter(visible::contains).toList();
+        /* dropping silently read as "sent to everyone"; the count says how many were not,
+           and dropping every one is a refusal, not an empty send */
+        int skipped = asked.size() - ids.size();
+        if (!asked.isEmpty() && ids.isEmpty()) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.FORBIDDEN, "None of those learners are yours.");
+        }
         return Map.of("sent", chat.broadcast(ids, me.id(), me.name(),
-                String.valueOf(body.get("subject")), String.valueOf(body.get("body"))));
+                String.valueOf(body.get("subject")), String.valueOf(body.get("body"))),
+                "skipped", skipped);
+    }
+
+    private static boolean isOffice(AuthUser me) {
+        return "ADMIN".equals(me.role()) || "SUPER_ADMIN".equals(me.role());
+    }
+
+    private java.util.Set<String> visibleIds(AuthUser me) {
+        return svc.myLearners(me.id()).stream().map(Learner::getId)
+                .collect(java.util.stream.Collectors.toSet());
     }
 
     @GetMapping("/dashboard")
@@ -292,7 +330,7 @@ public class MentorController {
     @PostMapping("/recordings")
     public Recording publishRecording(@RequestBody RecordingService.PublishInput body) {
         var me = current.get();
-        return recordingService.publish(body, me.id(), me.email());
+        return recordingService.publish(body, me.id(), me.email(), me.role());
     }
 
     /** What has already gone out. A mentor sees their own, the office sees all. */
@@ -348,7 +386,7 @@ public class MentorController {
                                            @RequestBody Map<String, Object> body) {
         AuthUser me = current.get();
         Object scores = body.get("rubricScores");
-        return projectRuns.review(me.id(), runId, stageKey,
+        return projectRuns.review(me.id(), me.role(), runId, stageKey,
                 (String) body.get("outcome"),
                 body.get("score") instanceof Number n ? n.doubleValue() : null,
                 (String) body.get("feedback"),

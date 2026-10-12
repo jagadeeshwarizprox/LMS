@@ -5,15 +5,17 @@ import { useToast } from '../../context/ToastContext'
 import { useDialog } from '../../components/Dialog'
 import Icon from '../../components/Icon'
 import { TableSkeleton } from '../../components/Skeletons'
-import { Bar, Card, Empty, Page, Stat, Tag } from '../../components/Ui'
+import { Bar, Card, Empty, LoadError, Page, Stat, Tag } from '../../components/Ui'
 
-const ACCESS = [
-  ['premium', 'Premium learners', 'The one to one mentored track'],
-  ['batch', 'Batch learners', 'Weekly cohorts'],
-  ['selfPaced', 'Self paced', 'No mentor attached'],
-  ['sequential', 'Sequential unlock', 'A chapter opens when the one before it is cleared'],
-  ['certificate', 'Certificate on completion', 'Issued after the last assignment is approved']
-]
+/*
+ * No access card.
+ *
+ * It offered premium, batch, self paced, sequential unlock and certificate switches, and
+ * nothing anywhere read any of them: a course switched off for premium still opened for
+ * every premium learner enrolled on it. A switch that does nothing is worse than none,
+ * because somebody turns it off and believes it worked. Who sees a course is decided by
+ * enrolment.
+ */
 
 /**
  * One course: what is in it, who it opens to, and what is still missing.
@@ -31,8 +33,12 @@ export default function CourseDetail() {
   const [picked, setPicked] = useState([])
   const [check, setCheck] = useState(null)
 
-  const load = () => api.get('/super/catalogue').then(setTree)
+  const [loadError, setLoadError] = useState(null)
+  const load = () => api.get('/super/catalogue')
+    .then((t) => { setTree(t); setLoadError(null) })
+    .catch((e) => setLoadError(e.message))
   useEffect(() => { load() }, [id])
+  if (loadError && !tree) return <Page title="Course"><LoadError error={loadError} onRetry={load} /></Page>
   if (!tree) return <TableSkeleton />
 
   const b = tree.bundles.find((x) => x.id === id)
@@ -72,9 +78,10 @@ export default function CourseDetail() {
       confirmLabel: 'Save'
     })
     if (!r) return
-    run(() => api.post('/super/catalogue/bundles', {
-      ...b, ...r
-    }), 'Course saved.')
+    /* only what the dialog edits, plus the module list, which the server cannot tell
+       apart from an empty one; it merges the rest onto the stored course */
+    run(() => api.post('/super/catalogue/bundles', { id: b.id, moduleIds: b.moduleIds, ...r }),
+      'Course saved.')
   }
 
   const publish = async () => {
@@ -245,26 +252,6 @@ export default function CourseDetail() {
         </Card>
         </div>
       </div>
-
-      <Card title="Who this course opens to">
-        <ul className="check-list">
-          {ACCESS.map(([k, label, note]) => (
-            <li key={k}>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={!!b.access?.[k]}
-                  onChange={(e) => run(
-                    () => api.put(`/super/catalogue/bundles/${id}/access`,
-                      { ...b.access, [k]: e.target.checked }),
-                    'Access updated.')}
-                />
-                <span><b>{label}</b><br />{note}</span>
-              </label>
-            </li>
-          ))}
-        </ul>
-      </Card>
 
       <Card title="Danger zone">
         <p className="text-muted small">

@@ -31,11 +31,12 @@ def strip(src):
     return ''.join(out)
 
 
-# 1. anything that writes on startup other than the bootstrap
+# 1. anything that writes on startup other than the bootstrap. A class named
+#    *Migration repairs existing rows (it never invents content), so it is allowed.
 for f in back.rglob('*.java'):
     src = f.read_text()
     if re.search(r'ApplicationRunner|CommandLineRunner|@PostConstruct', src) \
-       and f.stem != 'BootstrapSeeder':
+       and f.stem != 'BootstrapSeeder' and not f.stem.endswith('Migration'):
         problems.append(f'{f.name}: writes on startup and is not the bootstrap')
 
 # 2. invented people and addresses in code, ignoring comments and javadoc

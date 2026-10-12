@@ -2,10 +2,17 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import java.time.Instant;
 import java.util.*;
 
 /** Premium only. Biweekly one to one. Logging a call auto schedules the next one. */
+/* a learner's calls newest first, and a mentor's calls */
+@CompoundIndexes({
+    @CompoundIndex(name = "learner_scheduled", def = "{'learnerId': 1, 'scheduledFor': -1}"),
+    @CompoundIndex(name = "mentor", def = "{'mentorId': 1}")
+})
 @Document("progress_calls")
 public class ProgressCall {
     @Id private String id;

@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../../api/client'
+import Pager, { usePagedList } from '../../components/Pager'
 import Avatar from '../../components/Avatar'
 import { useDialog } from '../../components/Dialog'
 import { TableSkeleton } from '../../components/Skeletons'
@@ -15,15 +16,17 @@ import { Card, Empty, LoadError, Page, Stat, Tag, TrackTag } from '../../compone
 export default function OnboardingBoard() {
   const toast = useToast()
   const { ask } = useDialog()
-  const [data, setData] = useState(null)
   const [only, setOnly] = useState('')
 
-  const [loadError, setLoadError] = useState(null)
-
-  const load = () => api.get('/admin/onboarding-board')
-    .then((r) => { setData(r); setLoadError(null) })
-    .catch((e) => setLoadError(e.message))
-  useEffect(() => { load() }, [])
+  /*
+   * A page of fifty, longest waiting first. The funnel and the two totals still count
+   * everybody in onboarding (the server walks the open learners for them); the step
+   * filter is applied on the server so paging stays inside the chosen step.
+   */
+  const list = usePagedList((qs) => api.get(`/admin/onboarding-board?${qs}`), { stuckOn: only })
+  const data = list.data
+  const loadError = list.error && !list.data ? list.error : null
+  const load = list.reload
 
   /*
    * Group link set is one of the seven gates this board counts, and it was the only
@@ -54,7 +57,7 @@ export default function OnboardingBoard() {
   }
   if (!data) return <TableSkeleton />
 
-  const rows = data.rows.filter((r) => !only || r.stuckOn === only)
+  const rows = data.rows
 
   return (
     <Page
@@ -153,6 +156,8 @@ export default function OnboardingBoard() {
             </table>
           </div>
         )}
+        <Pager page={list.page} size={list.size} total={data.matching ?? data.total}
+          onPage={list.setPage} loading={list.loading} noun="learners" />
       </Card>
 
     </Page>

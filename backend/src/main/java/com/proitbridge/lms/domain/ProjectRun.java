@@ -3,6 +3,8 @@ package com.proitbridge.lms.domain;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -20,6 +22,12 @@ import java.util.Map;
  * A stage gate is a mentor decision, never automatic. Auto-advancing on submission would
  * let somebody reach the demo having built nothing.
  */
+/* queues read runs by learner set and status, and by mentor */
+@CompoundIndexes({
+    @CompoundIndex(name = "learner_status", def = "{'learnerId': 1, 'status': 1}"),
+    @CompoundIndex(name = "mentor", def = "{'mentorId': 1}"),
+    @CompoundIndex(name = "batch", def = "{'batchId': 1}")
+})
 @Document("project_runs")
 public class ProjectRun {
 
@@ -102,6 +110,17 @@ public class ProjectRun {
         /** Carried from the review that followed, so history reads in one place. */
         private String outcome;
         private String feedback;
+        /*
+         * Every review this attempt received, in order. outcome and feedback above are
+         * the latest; a second look used to overwrite the first, so an approval that was
+         * later withdrawn left no trace of ever having been given.
+         */
+        private List<Review> reviews = new ArrayList<>();
+
+        public List<Review> getReviews() { return reviews; }
+        public void setReviews(List<Review> reviews) {
+            this.reviews = reviews == null ? new ArrayList<>() : reviews;
+        }
 
         public int getVersion() { return version; }
         public void setVersion(int version) { this.version = version; }
@@ -121,6 +140,26 @@ public class ProjectRun {
         public void setOutcome(String outcome) { this.outcome = outcome; }
         public String getFeedback() { return feedback; }
         public void setFeedback(String feedback) { this.feedback = feedback; }
+    }
+
+    /** One mentor decision on one attempt. Appended, never edited. */
+    public static class Review {
+        private String outcome;
+        private Double score;
+        private String feedback;
+        private String reviewedBy;
+        private Instant at = Instant.now();
+
+        public String getOutcome() { return outcome; }
+        public void setOutcome(String outcome) { this.outcome = outcome; }
+        public Double getScore() { return score; }
+        public void setScore(Double score) { this.score = score; }
+        public String getFeedback() { return feedback; }
+        public void setFeedback(String feedback) { this.feedback = feedback; }
+        public String getReviewedBy() { return reviewedBy; }
+        public void setReviewedBy(String reviewedBy) { this.reviewedBy = reviewedBy; }
+        public Instant getAt() { return at; }
+        public void setAt(Instant at) { this.at = at; }
     }
 
     public String getId() { return id; }

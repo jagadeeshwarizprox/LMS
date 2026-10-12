@@ -3,7 +3,7 @@ import { api } from '../../api/client'
 import { useToast } from '../../context/ToastContext'
 import { useDialog } from '../../components/Dialog'
 import { TableSkeleton } from '../../components/Skeletons'
-import { Card, Empty, Page, Switch, Tabs, Tag } from '../../components/Ui'
+import { Card, Empty, LoadError, Page, Switch, Tabs, Tag } from '../../components/Ui'
 
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
@@ -22,12 +22,17 @@ export default function Settings() {
   const [dirty, setDirty] = useState({})
   const [links, setLinks] = useState([])
 
+  const [loadError, setLoadError] = useState(null)
   const load = async () => {
-    setData(await api.get('/super/catalogue/settings'))
+    try {
+      setData(await api.get('/super/catalogue/settings'))
+      setLoadError(null)
+    } catch (e) { setLoadError(e.message); return }
     setLinks(await api.get('/super/catalogue/links').catch(() => []))
     setDirty({})
   }
   useEffect(() => { load() }, [])
+  if (loadError && !data) return <Page title="App settings"><LoadError error={loadError} onRetry={load} /></Page>
   if (!data) return <TableSkeleton />
 
   const valueOf = (s) => (s.key in dirty ? dirty[s.key] : s.value)
@@ -81,9 +86,11 @@ export default function Settings() {
       confirmLabel: 'Add'
     })
     if (!r) return
-    await api.post('/super/catalogue/links', { ...r, position: links.length })
-    toast.push('Added.')
-    await load()
+    try {
+      await api.post('/super/catalogue/links', { ...r, position: links.length })
+      toast.push('Added.')
+      await load()
+    } catch (e) { toast.push(e.message, 'bad') }
   }
 
   const groups = [...data.groups, 'Community links']
@@ -151,9 +158,11 @@ export default function Settings() {
                         <button
                           className="btn btn-s"
                           onClick={async () => {
-                            await api.post(`/super/catalogue/settings/${s.key}/reset`, {})
-                            toast.push('Back to the default.')
-                            await load()
+                            try {
+                              await api.post(`/super/catalogue/settings/${s.key}/reset`, {})
+                              toast.push('Back to the default.')
+                              await load()
+                            } catch (e) { toast.push(e.message, 'bad') }
                           }}
                         >
                           Reset
@@ -189,8 +198,11 @@ export default function Settings() {
                     <button
                       className="btn btn-quiet"
                       onClick={async () => {
-                        await api.del(`/super/catalogue/links/${l.id}`)
-                        await load()
+                        try {
+                          await api.del(`/super/catalogue/links/${l.id}`)
+                          toast.push('Removed.')
+                          await load()
+                        } catch (e) { toast.push(e.message, 'bad') }
                       }}
                     >
                       Remove

@@ -37,11 +37,21 @@ export default function Schedules() {
   const [rows, setRows] = useState(null)
 
   const [loadError, setLoadError] = useState(null)
+  /*
+   * Whether this viewer may add one. It used to be inferred from whether any existing
+   * row was editable, so a mentor with nothing of their own yet never saw the button.
+   * The week carries the server's own answer, which is the rule the save is checked by.
+   */
+  const [canCreate, setCanCreate] = useState(true)
+  const [busy, setBusy] = useState(null)
 
   const load = () => api.get('/week/schedules')
     .then((r) => { setRows(r); setLoadError(null) })
     .catch((e) => setLoadError(e.message))
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    api.get('/week').then((w) => setCanCreate(w?.canCreate !== false)).catch(() => {})
+  }, [])
   if (loadError) {
     return <Page title="Repeating sessions"><LoadError error={loadError} onRetry={load} /></Page>
   }
@@ -67,24 +77,32 @@ export default function Schedules() {
       confirmLabel: 'Add'
     })
     if (!r) return
-    await api.post('/week/schedules', {
-      label: r.label, kind: r.kind, weekday: Number(r.weekday), startTime: r.startTime,
-      durationMin: Number(r.durationMin || 60), capacity: Number(r.capacity || 80),
-      trackScope: r.trackScope
-    })
-    toast.push('Added. The next two weeks of slots are live.')
-    await load()
+    try {
+      await api.post('/week/schedules', {
+        label: r.label, kind: r.kind, weekday: Number(r.weekday), startTime: r.startTime,
+        durationMin: Number(r.durationMin || 60), capacity: Number(r.capacity || 80),
+        trackScope: r.trackScope
+      })
+      toast.push('Added. The next two weeks of slots are live.')
+      await load()
+    } catch (e) { toast.push(e.message, 'bad') }
   }
 
+  /* a refusal used to be an unhandled rejection: the button did nothing and said nothing */
   const toggle = async (s) => {
-    await api.post(`/week/schedules/${s.id}/active`, { active: !s.active })
-    await load()
+    if (busy) return
+    setBusy(s.id)
+    try {
+      await api.post(`/week/schedules/${s.id}/active`, { active: !s.active })
+      await load()
+    } catch (e) { toast.push(e.message, 'bad') }
+    finally { setBusy(null) }
   }
 
   return (
     <Page title="Repeating sessions"
       lede="The cadence behind the week. Yours are marked; the rest are here so you can see what is already taken."
-      actions={rows.some((r) => r.canEdit) || rows.length === 0
+      actions={canCreate
         ? <button className="btn btn-pib" onClick={add}>Add a repeating session</button>
         : null}>
       <Card note="Every slot used to be created by hand, which is how a weekly cadence quietly stops happening.">
@@ -112,8 +130,10 @@ export default function Schedules() {
                   <td className="mono">{s.upcoming}</td>
                   <td className="text-end">
                     <Tag kind={s.active ? 'ok' : 'batch'}>{s.active ? 'Running' : 'Paused'}</Tag>
+                    {/* canEdit is the same owner rule the server applies to pausing */}
                     {s.canEdit && (
-                      <button className="btn btn-quiet ms-2" onClick={() => toggle(s)}>
+                      <button className="btn btn-quiet ms-2" onClick={() => toggle(s)}
+                        disabled={busy === s.id}>
                         {s.active ? 'Pause' : 'Resume'}
                       </button>
                     )}

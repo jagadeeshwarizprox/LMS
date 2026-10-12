@@ -176,6 +176,9 @@ export default function Recordings() {
                       onAllUploaded={(fs) => setMaterials((m) => ({
                         ...m, [s.slotId]: [...(m[s.slotId] || []), ...fs]
                       }))}
+                      onRemoved={(f) => setMaterials((m) => ({
+                        ...m, [s.slotId]: (m[s.slotId] || []).filter((x) => x.id !== f.id)
+                      }))}
                     />
                   </td>
                 </tr>

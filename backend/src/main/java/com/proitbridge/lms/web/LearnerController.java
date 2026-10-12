@@ -148,12 +148,13 @@ public class LearnerController {
 
     /* ------------------------------------------------------------ continue watching */
 
-    /** Called while playing, and once on close. */
+    /** Called while playing, and once on close. watchedSec is the played time, when the player sends it. */
     @PostMapping("/watch/{videoRef}")
     public Map<String, Object> saveWatch(@PathVariable String videoRef,
                                          @RequestBody Map<String, Integer> body) {
         return watch.save(svc.require(uid()).getId(), videoRef,
-                body.getOrDefault("seconds", 0), body.getOrDefault("durationSec", 0));
+                body.getOrDefault("seconds", 0), body.getOrDefault("durationSec", 0),
+                body.getOrDefault("watchedSec", -1));
     }
 
     /** Asked before playback starts, so the player knows whether to offer a resume. */

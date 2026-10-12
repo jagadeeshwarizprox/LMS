@@ -3,10 +3,12 @@ package com.proitbridge.lms.config;
 import com.proitbridge.lms.domain.Feature;
 import com.proitbridge.lms.domain.FormSection;
 import com.proitbridge.lms.domain.User;
+import com.proitbridge.lms.repo.AppSettingRepository;
 import com.proitbridge.lms.repo.FeatureRepository;
 import com.proitbridge.lms.repo.FormSectionRepository;
 import com.proitbridge.lms.repo.UserRepository;
 import com.proitbridge.lms.service.CredentialService;
+import com.proitbridge.lms.service.SettingsService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -67,6 +69,19 @@ public class BootstrapSeeder {
      * A key added in a later release has to reach a database that already exists,
      * and an admin who has switched something off must keep it switched off.
      */
+    /** The same for settings nothing read; see SettingsService.RETIRED. */
+    @Bean
+    ApplicationRunner removeRetiredSettings(AppSettingRepository settings) {
+        return args -> {
+            for (String gone : SettingsService.RETIRED) {
+                settings.findByKey(gone).ifPresent(s -> {
+                    settings.delete(s);
+                    log.info("Removed the unused setting {}", gone);
+                });
+            }
+        };
+    }
+
     @Bean
     ApplicationRunner ensureFeatures(FeatureRepository features) {
         return args -> {

@@ -2,13 +2,19 @@ package com.proitbridge.lms.service;
 
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.aggregation.Aggregation;
+import org.springframework.data.mongodb.core.aggregation.GroupOperation;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.*;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * Everything a mentor needs that the queues did not give them.
@@ -43,6 +49,7 @@ public class MentorDeskService {
     private final MentorService mentorService;
     private final MeetingService meetings;
     private final MentorCoverService cover;
+    private final MongoTemplate mongo;
 
     public MentorDeskService(UserRepository users, LearnerRepository learners, BatchRepository batches,
                              BundleRepository bundles, AssignmentRepository assignments,
@@ -53,7 +60,8 @@ public class MentorDeskService {
                              ModuleRepository modules, StudyDayRepository studyDays,
                              LearnerService learnerService, MentorService mentorService,
                              MeetingService meetings, MentorCoverService cover,
-                             LearnerProgressService progressView) {
+                             LearnerProgressService progressView, MongoTemplate mongo) {
+        this.mongo = mongo;
         this.users = users; this.learners = learners; this.batches = batches; this.bundles = bundles;
         this.assignments = assignments; this.projects = projects; this.mocks = mocks;
         this.calls = calls; this.slots = slots; this.bookings = bookings; this.resumes = resumes;
@@ -74,7 +82,8 @@ public class MentorDeskService {
         /* own learners, plus anyone being covered for. The learner's mentor is
            unchanged, so the grouping and the record still say whose they are. */
         List<Learner> mine = cover.learnersVisibleTo(mentorId);
-        List<Map<String, Object>> rows = mine.stream().map(this::row).toList();
+        DeskContext ctx = new DeskContext(mine);
+        List<Map<String, Object>> rows = mine.stream().map(l -> row(l, ctx)).toList();
 
         Map<String, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
         rows.stream().filter(r -> "PREMIUM".equals(String.valueOf(r.get("trackType"))))
@@ -126,33 +135,110 @@ public class MentorDeskService {
         return v instanceof Number n ? n.intValue() : 0;
     }
 
-    private Map<String, Object> row(Learner l) {
-        User u = users.findById(l.getUserId()).orElse(null);
+    /**
+     * Everything the desk rows need, for every learner on the desk, read once.
+     *
+     * Each row used to run its own eight or so reads (user, assignments, projects, mocks,
+     * calls, study days, batch, bundle, mentor, risk, watch stats), so a desk of eighty was
+     * several hundred round trips on every open. These are findAllById reads and grouped
+     * counts over learnerId indexes, a fixed dozen whatever the roster size.
+     */
+    private final class DeskContext {
+        final Map<String, User> people = new HashMap<>();
+        final Map<String, String> batchCodes = new HashMap<>();
+        final Map<String, String> bundleNames = new HashMap<>();
+        final Map<String, Long> waiting = new HashMap<>();
+        final Map<String, Instant> lastSubmission = new HashMap<>();
+        final Map<String, Instant> nextCall = new HashMap<>();
+        final Map<String, Long> weekMinutes = new HashMap<>();
+        final Map<String, Long> overdue;
+        final Map<String, Map<String, Object>> stats;
+
+        DeskContext(List<Learner> ls) {
+            List<String> ids = ls.stream().map(Learner::getId).filter(Objects::nonNull).toList();
+            Set<String> userIds = new HashSet<>();
+            for (Learner l : ls) {
+                if (l.getUserId() != null) userIds.add(l.getUserId());
+                if (l.getMentorId() != null) userIds.add(l.getMentorId());
+            }
+            if (!userIds.isEmpty()) people.putAll(usersById(userIds));
+            Set<String> batchIds = ls.stream().map(Learner::getBatchId).filter(Objects::nonNull).collect(Collectors.toSet());
+            if (!batchIds.isEmpty()) batches.findAllById(batchIds).forEach(b -> batchCodes.put(b.getId(), b.getCode()));
+            Set<String> bundleIds = ls.stream().map(Learner::getBundleId).filter(Objects::nonNull).collect(Collectors.toSet());
+            if (!bundleIds.isEmpty()) bundles.findAllById(bundleIds).forEach(b -> bundleNames.put(b.getId(), b.getName()));
+
+            if (!ids.isEmpty()) {
+                /* waiting on me: submitted tasks, submitted projects, pending mocks */
+                for (org.bson.Document d : aggregate(Assignment.class,
+                        Criteria.where("learnerId").in(ids).and("status").is("SUBMITTED"),
+                        Aggregation.group("learnerId").count().as("n"))) add(waiting, d);
+                for (org.bson.Document d : aggregate(ProjectWork.class,
+                        Criteria.where("learnerId").in(ids).and("status").is("SUBMITTED"),
+                        Aggregation.group("learnerId").count().as("n"))) add(waiting, d);
+                for (org.bson.Document d : aggregate(MockRequest.class,
+                        Criteria.where("learnerId").in(ids).and("status").is("PENDING"),
+                        Aggregation.group("learnerId").count().as("n"))) add(waiting, d);
+
+                /* the latest submission across tasks and projects */
+                for (Class<?> type : List.of(Assignment.class, ProjectWork.class)) {
+                    for (org.bson.Document d : aggregate(type, Criteria.where("learnerId").in(ids),
+                            Aggregation.group("learnerId").max("submittedAt").as("t"))) {
+                        Instant t = instant(d.get("t"));
+                        if (t != null) lastSubmission.merge(String.valueOf(d.get("_id")), t,
+                                (a, b) -> a.isAfter(b) ? a : b);
+                    }
+                }
+
+                /* the soonest call still to be held, ignoring ones missed by more than two days */
+                for (org.bson.Document d : aggregate(ProgressCall.class,
+                        Criteria.where("learnerId").in(ids).and("heldAt").is(null)
+                                .and("scheduledFor").gt(Instant.now().minus(2, ChronoUnit.DAYS)),
+                        Aggregation.group("learnerId").min("scheduledFor").as("t"))) {
+                    Instant t = instant(d.get("t"));
+                    if (t != null) nextCall.put(String.valueOf(d.get("_id")), t);
+                }
+
+                /* study minutes since Monday (IST) */
+                for (org.bson.Document d : aggregate(StudyDay.class,
+                        Criteria.where("learnerId").in(ids)
+                                .and("day").gte(LocalDate.now(IST).with(DayOfWeek.MONDAY)),
+                        Aggregation.group("learnerId").sum("minutes").as("n"))) add(weekMinutes, d);
+            }
+            overdue = mentorService.overdueCounts(ids);
+            stats = progressView.rowStatsFor(ls);
+        }
+
+        private void add(Map<String, Long> into, org.bson.Document d) {
+            Object n = d.get("n");
+            into.merge(String.valueOf(d.get("_id")), n instanceof Number x ? x.longValue() : 0L, Long::sum);
+        }
+    }
+
+    private Map<String, User> usersById(Collection<String> ids) {
+        Map<String, User> out = new HashMap<>();
+        users.findAllById(ids).forEach(u -> out.put(u.getId(), u));
+        return out;
+    }
+
+    private List<org.bson.Document> aggregate(Class<?> type, Criteria match, GroupOperation group) {
+        return mongo.aggregate(Aggregation.newAggregation(Aggregation.match(match), group),
+                type, org.bson.Document.class).getMappedResults();
+    }
+
+    private static Instant instant(Object o) {
+        if (o instanceof Date d) return d.toInstant();
+        if (o instanceof Instant i) return i;
+        return null;
+    }
+
+    private Map<String, Object> row(Learner l, DeskContext ctx) {
+        User u = ctx.people.get(l.getUserId());
         Map<String, Object> stats = learnerService.stats(l);
 
-        List<Assignment> tasks = assignments.findByLearnerId(l.getId());
-        List<ProjectWork> pw = projects.findByLearnerId(l.getId());
-        long waiting = tasks.stream().filter(a -> "SUBMITTED".equals(a.getStatus())).count()
-                + pw.stream().filter(p -> "SUBMITTED".equals(p.getStatus())).count()
-                + mocks.findByLearnerId(l.getId()).stream()
-                    .filter(m -> "PENDING".equals(m.getStatus())).count();
-
-        Instant lastSubmission = Stream.concat(
-                tasks.stream().map(Assignment::getSubmittedAt),
-                pw.stream().map(ProjectWork::getSubmittedAt))
-                .filter(Objects::nonNull).max(Instant::compareTo).orElse(null);
-
-        Instant nextCall = calls.findByLearnerIdOrderByScheduledForDesc(l.getId()).stream()
-                .filter(c -> c.getHeldAt() == null && c.getScheduledFor() != null)
-                .map(ProgressCall::getScheduledFor)
-                .filter(t -> t.isAfter(Instant.now().minus(2, ChronoUnit.DAYS)))
-                .min(Instant::compareTo).orElse(null);
-
-        /* a study row with no date is bad data, not a reason to 500 the whole roster */
-        int weekMinutes = studyDays.findByLearnerIdOrderByDayDesc(l.getId()).stream()
-                .filter(d -> d.getDay() != null)
-                .filter(d -> !d.getDay().isBefore(LocalDate.now(IST).with(DayOfWeek.MONDAY)))
-                .mapToInt(StudyDay::getMinutes).sum();
+        long waiting = ctx.waiting.getOrDefault(l.getId(), 0L);
+        Instant lastSubmission = ctx.lastSubmission.get(l.getId());
+        Instant nextCall = ctx.nextCall.get(l.getId());
+        int weekMinutes = ctx.weekMinutes.getOrDefault(l.getId(), 0L).intValue();
 
         long idleDays = u == null || u.getLastLoginAt() == null ? 999
                 : ChronoUnit.DAYS.between(u.getLastLoginAt(), Instant.now());
@@ -163,10 +249,10 @@ public class MentorDeskService {
         m.put("email", u == null ? null : u.getEmail());
         m.put("phone", u == null ? null : u.getPhone());
         m.put("trackType", l.getTrackType());
-        m.put("batch", l.getBatchId() == null ? null
-                : batches.findById(l.getBatchId()).map(Batch::getCode).orElse(null));
-        m.put("bundle", l.getBundleId() == null ? null
-                : bundles.findById(l.getBundleId()).map(Bundle::getName).orElse(null));
+        m.put("batch", l.getBatchId() == null ? null : ctx.batchCodes.get(l.getBatchId()));
+        /* the code is for reading; anything that acts on the batch needs its id */
+        m.put("batchId", l.getBatchId());
+        m.put("bundle", l.getBundleId() == null ? null : ctx.bundleNames.get(l.getBundleId()));
         m.put("percent", stats.get("percent"));
         m.put("avgQuiz", stats.get("avgQuiz"));
         m.put("onboarded", l.gatesCleared());
@@ -183,18 +269,18 @@ public class MentorDeskService {
          * plus "no study minutes this week", which flags the entire cohort every Monday.
          * The week's minutes are still on the row as their own number, where they belong.
          */
-        List<String> risk = mentorService.riskReasons(l);
+        List<String> risk = mentorService.riskReasons(l, u, ctx.overdue.getOrDefault(l.getId(), 0L));
         m.put("atRisk", !risk.isEmpty());
         m.put("riskReasons", risk);
-        m.put("mentor", l.getMentorId() == null ? null
-                : users.findById(l.getMentorId()).map(User::getFullName).orElse(null));
+        m.put("mentor", l.getMentorId() == null || ctx.people.get(l.getMentorId()) == null ? null
+                : ctx.people.get(l.getMentorId()).getFullName());
         /*
          * The roster is built here, not by MentorService.learnerRow, so adding the watch
          * numbers there left this list showing a dash in the Videos column. Two row
          * builders for the same thing is the underlying problem; until they are merged,
          * both carry the same stats.
          */
-        m.putAll(progressView.rowStats(l));
+        m.putAll(ctx.stats.getOrDefault(l.getId(), progressView.rowStats(l)));
         return m;
     }
 
@@ -221,9 +307,11 @@ public class MentorDeskService {
         Instant now = Instant.now();
         LocalDate today = LocalDate.now(IST);
 
-        List<Map<String, Object>> sessions = slots.findByMentorId(mentorId).stream()
-                .filter(s -> s.getStartsAt() != null)
-                .filter(s -> s.getStartsAt().atZone(IST).toLocalDate().equals(today))
+        /* today's sessions by the (mentorId, startsAt) index, not every slot the mentor ever had */
+        Instant dayStart = today.atStartOfDay(IST).toInstant();
+        Instant dayEnd = today.plusDays(1).atStartOfDay(IST).toInstant();
+        List<Map<String, Object>> sessions = mongo.find(Query.query(Criteria.where("mentorId").is(mentorId)
+                        .and("startsAt").gte(dayStart).lt(dayEnd)), Slot.class).stream()
                 .sorted(Comparator.comparing(Slot::getStartsAt))
                 .map(s -> {
                     Map<String, Object> m = new LinkedHashMap<>();
@@ -236,18 +324,31 @@ public class MentorDeskService {
                     return m;
                 }).collect(Collectors.toList());
 
-        List<Map<String, Object>> callsDue = cover.learnersVisibleTo(mentorId).stream()
+        List<Learner> visible = cover.learnersVisibleTo(mentorId);
+        List<Learner> callable = visible.stream()
                 .filter(l -> l.getTrackType() == Learner.TrackType.PREMIUM && !l.isOnHold())
+                .toList();
+        /* open calls for every callable learner in one read, and their names in one more */
+        Map<String, Instant> soonest = new HashMap<>();
+        if (!callable.isEmpty()) {
+            for (ProgressCall c : calls.findByLearnerIdInAndHeldAtIsNull(
+                    callable.stream().map(Learner::getId).toList())) {
+                if (c.getScheduledFor() == null) continue;
+                soonest.merge(c.getLearnerId(), c.getScheduledFor(), (a, b) -> a.isBefore(b) ? a : b);
+            }
+        }
+        Map<String, User> callNames = usersById(callable.stream()
+                .filter(l -> soonest.containsKey(l.getId()))
+                .map(Learner::getUserId).filter(Objects::nonNull).collect(Collectors.toSet()));
+        List<Map<String, Object>> callsDue = callable.stream()
                 .map(l -> {
-                    var next = calls.findByLearnerIdOrderByScheduledForDesc(l.getId()).stream()
-                            .filter(c -> c.getHeldAt() == null && c.getScheduledFor() != null)
-                            .min(Comparator.comparing(ProgressCall::getScheduledFor));
-                    if (next.isEmpty()) return null;
-                    Instant when = next.get().getScheduledFor();
+                    Instant when = soonest.get(l.getId());
+                    if (when == null) return null;
                     if (when.isAfter(now.plus(7, ChronoUnit.DAYS))) return null;
                     Map<String, Object> m = new LinkedHashMap<>();
                     m.put("learnerId", l.getId());
-                    m.put("name", users.findById(l.getUserId()).map(User::getFullName).orElse(""));
+                    User cu = callNames.get(l.getUserId());
+                    m.put("name", cu == null ? "" : cu.getFullName());
                     m.put("scheduledFor", when);
                     m.put("overdue", when.isBefore(now));
                     return m;
@@ -255,7 +356,7 @@ public class MentorDeskService {
                 .sorted(Comparator.comparing(m -> (Instant) m.get("scheduledFor")))
                 .collect(Collectors.toList());
 
-        List<String> ids = cover.learnersVisibleTo(mentorId).stream().map(Learner::getId).toList();
+        List<String> ids = visible.stream().map(Learner::getId).toList();
         List<Map<String, Object>> ageing = ids.isEmpty() ? List.of()
                 : assignments.findByLearnerIdInAndStatus(ids, "SUBMITTED").stream()
                     .sorted(Comparator.comparing(Assignment::getSubmittedAt))
@@ -276,17 +377,13 @@ public class MentorDeskService {
         out.put("sessionsToday", sessions);
         out.put("callsDue", callsDue);
         out.put("oldestWaiting", ageing);
-        out.put("reviewedThisWeek", assignments.findByLearnerIdIn(ids.isEmpty() ? List.of("-") : ids)
-                .stream().filter(a -> a.getReviewedAt() != null)
-                .filter(a -> !a.getReviewedAt().atZone(IST).toLocalDate()
-                        .isBefore(today.with(DayOfWeek.MONDAY)))
-                .count());
+        /* counts in the database from Monday 00:00 IST, not every row then filtered */
+        Instant monday = today.with(DayOfWeek.MONDAY).atStartOfDay(IST).toInstant();
+        out.put("reviewedThisWeek", ids.isEmpty() ? 0L : mongo.count(Query.query(
+                Criteria.where("learnerId").in(ids).and("reviewedAt").gte(monday)), Assignment.class));
         out.put("cover", cover.stateFor(mentorId));
-        out.put("callsHeldThisWeek", calls.findByMentorId(mentorId).stream()
-                .filter(c -> c.getHeldAt() != null)
-                .filter(c -> !c.getHeldAt().atZone(IST).toLocalDate()
-                        .isBefore(today.with(DayOfWeek.MONDAY)))
-                .count());
+        out.put("callsHeldThisWeek", mongo.count(Query.query(
+                Criteria.where("mentorId").is(mentorId).and("heldAt").gte(monday)), ProgressCall.class));
         return out;
     }
 
@@ -340,8 +437,15 @@ public class MentorDeskService {
 
     /* ================================================================ small actions */
 
-    public ResumeVersion markResumeReviewed(String resumeId) {
-        ResumeVersion r = resumes.findById(resumeId).orElseThrow();
+    /** Only somebody who can see the learner may sign off their resume. */
+    public ResumeVersion markResumeReviewed(String resumeId, String mentorId, String role) {
+        ResumeVersion r = resumes.findById(resumeId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such resume."));
+        Learner l = r.getLearnerId() == null ? null : learners.findById(r.getLearnerId()).orElse(null);
+        if (l == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Learner not found.");
+        }
+        mentorService.assertMine(mentorId, l, role);
         r.setReviewedByMentor(true);
         return resumes.save(r);
     }

@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
+import Pager, { usePagedList } from '../../components/Pager'
 import { useToast } from '../../context/ToastContext'
 import { useDialog } from '../../components/Dialog'
 import { parseVideo } from '../../components/VideoField'
@@ -28,14 +29,18 @@ export default function Access() {
   const { ask } = useDialog()
   const [tab, setTab] = useState(0)
   const [flags, setFlags] = useState(null)
-  const [grants, setGrants] = useState(null)
+  /* the playback log, a page at a time on the server, narrowed by result */
+  const [outcome, setOutcome] = useState('')
+  const plays = usePagedList((qs) => api.get(`/admin/access/grants?${qs}`), { outcome })
+  /* how many refusals in the whole log: a one-row page, read for its total */
+  const [refused, setRefused] = useState(0)
   const [videos, setVideos] = useState(null)
   const [error, setError] = useState(null)
-  const [q, setQ] = useState('')
   const [busy, setBusy] = useState(false)
 
   const loadFlags = () => api.get('/admin/access/flags').then(setFlags)
-  const loadGrants = () => api.get('/admin/access/grants').then(setGrants)
+  const loadGrants = () => api.get('/admin/access/grants?outcome=REFUSED&size=1')
+    .then((r) => setRefused(r.total || 0))
   const loadVideos = () => api.get('/admin/access/videos').then(setVideos)
 
   const loadAll = () => {
@@ -44,16 +49,12 @@ export default function Access() {
   }
   useEffect(() => { loadAll() }, [])
 
-  const shownGrants = useMemo(() => {
-    if (!grants) return []
-    const n = q.trim().toLowerCase()
-    if (!n) return grants
-    return grants.filter((g) => [g.name, g.email, g.video, g.ip, g.outcome]
-      .some((x) => String(x || '').toLowerCase().includes(n)))
-  }, [grants, q])
-
-  if (error) return <Page title="Access and sharing"><LoadError error={error} onRetry={loadAll} /></Page>
-  if (!flags || !grants || !videos) return <TableSkeleton />
+  const failure = error || (plays.error && !plays.data ? plays.error : null)
+  if (failure) {
+    return <Page title="Access and sharing"><LoadError error={failure} onRetry={() => { loadAll(); plays.reload() }} /></Page>
+  }
+  if (!flags || !plays.data || !videos) return <TableSkeleton />
+  const shownGrants = plays.rows
 
   const sweep = async () => {
     setBusy(true)
@@ -133,7 +134,6 @@ export default function Access() {
     } catch (e) { toast.push(e.message, 'bad') }
   }
 
-  const refused = grants.filter((g) => g.outcome === 'REFUSED').length
   const suspendedNow = flags.filter((f) => f.suspended).length
 
   return (
@@ -145,7 +145,7 @@ export default function Access() {
       <div className="row g-3 mb-3">
         <div className="col-6 col-lg-3"><Stat value={flags.length} label="Open flags" icon="risk" tone={flags.length ? 'var(--stop)' : undefined} /></div>
         <div className="col-6 col-lg-3"><Stat value={suspendedNow} label="Flagged and suspended" icon="ban" /></div>
-        <div className="col-6 col-lg-3"><Stat value={grants.length} label="Recent plays" icon="recordings" /></div>
+        <div className="col-6 col-lg-3"><Stat value={plays.total} label={outcome ? 'Plays matching' : 'Plays logged'} icon="recordings" /></div>
         <div className="col-6 col-lg-3"><Stat value={refused} label="Plays refused" icon="shield" /></div>
       </div>
 
@@ -192,10 +192,14 @@ export default function Access() {
       {tab === 1 && (
         <Card
           title="Playback log"
-          note="The last 200 plays. Every play is granted at the moment of pressing play."
+          note="Every play, newest first. Each one is granted at the moment of pressing play."
           actions={
-            <input className="form-control" style={{ width: 240 }} placeholder="Search name, video, IP"
-              value={q} onChange={(e) => setQ(e.target.value)} />
+            <select className="form-select" style={{ width: 180 }} value={outcome}
+              aria-label="Result" onChange={(e) => setOutcome(e.target.value)}>
+              <option value="">Played and refused</option>
+              <option value="GRANTED">Played only</option>
+              <option value="REFUSED">Refused only</option>
+            </select>
           }
         >
           {shownGrants.length === 0 ? <Empty title="No plays match that" /> : (
@@ -223,6 +227,8 @@ export default function Access() {
               </table>
             </div>
           )}
+          <Pager page={plays.page} size={plays.size} total={plays.total}
+            onPage={plays.setPage} loading={plays.loading} noun="plays" />
         </Card>
       )}
 

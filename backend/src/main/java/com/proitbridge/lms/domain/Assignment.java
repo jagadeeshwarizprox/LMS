@@ -2,8 +2,18 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import java.time.Instant;
 import java.util.*;
+/* mentor queues read their learners' work by status; the review queue sorts by submission */
+@CompoundIndexes({
+    @CompoundIndex(name = "learner_status", def = "{'learnerId': 1, 'status': 1}"),
+    @CompoundIndex(name = "status_submitted", def = "{'status': 1, 'submittedAt': -1}"),
+    @CompoundIndex(name = "learner_chapter_submitted", def = "{'learnerId': 1, 'chapterId': 1, 'submittedAt': -1}"),
+    /* overdue sweeps: dueAt < now and status != APPROVED, sorted by dueAt */
+    @CompoundIndex(name = "due_status", def = "{'dueAt': 1, 'status': 1}")
+})
 @Document("assignments")
 public class Assignment {
     @Id private String id;

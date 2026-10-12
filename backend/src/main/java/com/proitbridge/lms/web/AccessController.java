@@ -6,12 +6,18 @@ import com.proitbridge.lms.domain.VideoAccessLog;
 import com.proitbridge.lms.repo.UserRepository;
 import com.proitbridge.lms.repo.VideoRepository;
 import com.proitbridge.lms.security.CurrentUser;
+import com.proitbridge.lms.service.AdminQueries;
 import com.proitbridge.lms.service.AnomalyService;
 import com.proitbridge.lms.service.LoginGuardService;
 import com.proitbridge.lms.service.SessionService;
 import com.proitbridge.lms.service.VideoAccessService;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -31,10 +37,13 @@ public class AccessController {
     private final CurrentUser current;
     private final UserRepository users;
     private final VideoRepository videoRepo;
+    private final MongoTemplate mongo;
 
     public AccessController(VideoAccessService videos, AnomalyService anomalies,
                             SessionService sessions, LoginGuardService guard,
-                            CurrentUser current, UserRepository users, VideoRepository videoRepo) {
+                            CurrentUser current, UserRepository users, VideoRepository videoRepo,
+                            MongoTemplate mongo) {
+        this.mongo = mongo;
         this.videos = videos; this.anomalies = anomalies;
         this.sessions = sessions; this.guard = guard; this.current = current;
         this.users = users; this.videoRepo = videoRepo;
@@ -59,8 +68,27 @@ public class AccessController {
      * ids, and a screen full of ids tells the office nothing about who shared what.
      */
     @GetMapping("/grants")
-    public List<Map<String, Object>> grants() {
-        List<VideoAccessLog> rows = videos.recentGrants();
+    public Map<String, Object> grants(@RequestParam(required = false) String userId,
+                                      @RequestParam(required = false) String outcome,
+                                      @RequestParam(required = false) Integer page,
+                                      @RequestParam(required = false) Integer size) {
+        /*
+         * A page at a time, newest first, off the (issuedAt) index, or (userId, issuedAt)
+         * when narrowed to one account. This was the latest two hundred grants, which at
+         * a thousand people watching is the last few minutes: anything worth looking into
+         * had scrolled off before anybody opened the screen.
+         */
+        int p = AdminQueries.page(page);
+        int n = AdminQueries.size(size);
+        List<Criteria> parts = new ArrayList<>();
+        if (userId != null && !userId.isBlank()) parts.add(Criteria.where("userId").is(userId));
+        if (outcome != null && !outcome.isBlank()) parts.add(Criteria.where("outcome").is(outcome.trim()));
+        Criteria where = AdminQueries.all(parts);
+        long total = mongo.count(new Query(where), VideoAccessLog.class);
+        List<VideoAccessLog> rows = mongo.find(new Query(where)
+                .with(Sort.by(Sort.Direction.DESC, "issuedAt"))
+                .skip((long) p * n).limit(n), VideoAccessLog.class);
+
         Set<String> userIds = rows.stream().map(VideoAccessLog::getUserId)
                 .filter(x -> x != null).collect(Collectors.toSet());
         Set<String> videoIds = rows.stream().map(VideoAccessLog::getVideoId)
@@ -69,7 +97,7 @@ public class AccessController {
         users.findAllById(userIds).forEach(u -> who.put(u.getId(), u));
         Map<String, String> title = new HashMap<>();
         videoRepo.findAllById(videoIds).forEach(v -> title.put(v.getId(), v.getTitle()));
-        return rows.stream().map(r -> {
+        List<Map<String, Object>> out = rows.stream().map(r -> {
             Map<String, Object> m = new LinkedHashMap<>();
             User u = r.getUserId() == null ? null : who.get(r.getUserId());
             m.put("id", r.getId());
@@ -84,6 +112,7 @@ public class AccessController {
             m.put("deviceId", r.getDeviceId());
             return m;
         }).toList();
+        return AdminQueries.pageOf(out, total, p, n);
     }
 
     /** Accounts currently shut out by the rate limit, and the way to clear one. */
@@ -120,6 +149,20 @@ public class AccessController {
     @PostMapping("/users/{userId}/suspend")
     public Map<String, Object> suspend(@PathVariable String userId, @RequestBody Map<String, Object> body) {
         boolean on = !Boolean.FALSE.equals(body.get("suspended"));
+        User target = users.findById(userId).orElseThrow(() ->
+                new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND, "No such account."));
+        /* the kill switch is for learners and mentors. An admin cannot reach another
+           admin, and nobody suspends a super admin: that is how the product gets locked */
+        boolean callerSuper = current.get().isSuperAdmin();
+        if (on && target.getRole() == User.Role.SUPER_ADMIN) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.FORBIDDEN, "A super admin account cannot be suspended.");
+        }
+        if (!callerSuper && (target.getRole() == User.Role.ADMIN || target.getRole() == User.Role.SUPER_ADMIN)) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.FORBIDDEN, "An admin account is managed by the super admin.");
+        }
         sessions.suspend(userId, on, (String) body.get("reason"), actor());
         return Map.of("suspended", on);
     }

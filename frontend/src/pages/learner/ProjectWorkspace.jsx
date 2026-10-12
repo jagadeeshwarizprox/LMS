@@ -301,6 +301,7 @@ function StagePanel({ run, stage, onDone, toast }) {
             purpose="PROJECT"
             linkedId={run.runId}
             onUploaded={(f) => setFileIds((prev) => [...prev, f.id])}
+            onRemoved={(f) => setFileIds((prev) => prev.filter((x) => x !== f.id))}
           />
           {fileIds.length > 0 && (
             <p className="small muted">{fileIds.length} file{fileIds.length === 1 ? '' : 's'} attached.</p>

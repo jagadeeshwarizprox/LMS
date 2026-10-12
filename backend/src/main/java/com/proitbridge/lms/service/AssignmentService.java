@@ -2,6 +2,10 @@ package com.proitbridge.lms.service;
 
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -39,6 +43,8 @@ public class AssignmentService {
     private final MessageService messages;
     private final MentorCoverService cover;
     private final FileService fileService;
+    private final ProgressSnapshotService snapshots;
+    private final MongoTemplate mongo;
 
     public AssignmentService(AssignmentRepository assignments, AssignmentEventRepository events,
                              RubricRepository rubrics, LearnerRepository learners,
@@ -46,11 +52,14 @@ public class AssignmentService {
                              ProgressRepository progress, ChapterRepository chapters,
                              MailService mail, ActivityService activity, MessageService messages,
                              MentorCoverService cover,
-                             FileService fileService) {
+                             FileService fileService, ProgressSnapshotService snapshots,
+                             MongoTemplate mongo) {
+        this.mongo = mongo;
         this.assignments = assignments; this.events = events; this.rubrics = rubrics;
         this.learners = learners; this.users = users; this.batches = batches;
         this.progress = progress; this.chapters = chapters; this.mail = mail;
         this.activity = activity; this.messages = messages; this.cover = cover; this.fileService = fileService;
+        this.snapshots = snapshots;
     }
 
     /* ---------------------------------------------------------------- creating */
@@ -60,13 +69,38 @@ public class AssignmentService {
 
     /** One learner, several, or a whole batch. The same task, one row each. */
     public Map<String, Object> assign(NewTask body, String mentorId, String mentorName) {
+        return assign(body, mentorId, mentorName, "MENTOR");
+    }
+
+    /**
+     * The same, with the caller's role.
+     *
+     * Targets used to be taken on trust: any learner id, or any batch id, and a mentor
+     * could set work for, and message, a cohort that was not theirs. A mentor's targets
+     * are now cut down to the learners they can see, the same rule the desk is built
+     * from; the office is unrestricted.
+     */
+    public Map<String, Object> assign(NewTask body, String mentorId, String mentorName, String role) {
         if (body.title() == null || body.title().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Give the task a title.");
         }
+        boolean office = "ADMIN".equals(role) || "SUPER_ADMIN".equals(role);
         Set<String> targets = new LinkedHashSet<>();
         if (body.learnerIds() != null) targets.addAll(body.learnerIds());
         if (body.batchId() != null && !body.batchId().isBlank()) {
             learners.findByBatchId(body.batchId()).forEach(l -> targets.add(l.getId()));
+        }
+        int skipped = 0;
+        if (!office && !targets.isEmpty()) {
+            Set<String> visible = cover.learnersVisibleTo(mentorId).stream()
+                    .map(Learner::getId).collect(Collectors.toSet());
+            int asked = targets.size();
+            targets.retainAll(visible);
+            skipped = asked - targets.size();
+            /* every one of them dropped is a refusal, not "you chose nobody" */
+            if (targets.isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "None of those learners are yours.");
+            }
         }
         if (targets.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
@@ -74,8 +108,11 @@ public class AssignmentService {
         }
 
         List<String> created = new ArrayList<>();
+        /* every target in one read rather than one per learner */
+        Map<String, Learner> byId = new HashMap<>();
+        learners.findAllById(targets).forEach(x -> byId.put(x.getId(), x));
         for (String learnerId : targets) {
-            Learner l = learners.findById(learnerId).orElse(null);
+            Learner l = byId.get(learnerId);
             if (l == null || l.isOnHold()) continue;    // on hold means left alone
             Assignment a = new Assignment();
             a.setLearnerId(learnerId);
@@ -99,7 +136,8 @@ public class AssignmentService {
         }
         activity.log(mentorId, null, "ASSIGN_TASK", "assignment",
                 body.title() + " to " + created.size() + " learners");
-        return Map.of("created", created.size(), "ids", created);
+        /* skipped: learners asked for that this mentor cannot see, so the screen can say so */
+        return Map.of("created", created.size(), "ids", created, "skipped", skipped);
     }
 
     public Assignment setDue(String assignmentId, Instant dueAt, String mentorId, String mentorName) {
@@ -169,6 +207,10 @@ public class AssignmentService {
             a.setRubricScores(new LinkedHashMap<>(rubricScores));
         }
 
+        /* no score sent means the score is left as it was: a bulk approval, or a status
+           change with only a comment, used to wipe a mark somebody had already given */
+        if (finalScore == null) finalScore = a.getScore();
+
         a.setStatus(status);
         a.setScore(finalScore);
         a.setMentorFeedback(feedback);
@@ -189,12 +231,27 @@ public class AssignmentService {
     /** Several at once, with one comment. Four approvals should not be four screens. */
     public Map<String, Object> bulkReview(List<String> ids, String status, String feedback,
                                           String mentorId, String mentorName, String mentorRole) {
+        /*
+         * One bad row should not stop the rest, but it should not vanish either. The
+         * screen used to say every selected row was done whatever happened, so a task
+         * that was refused looked approved. Failures come back with their reason.
+         */
         int n = 0;
-        for (String id : ids) {
+        List<Map<String, Object>> failed = new ArrayList<>();
+        for (String id : ids == null ? List.<String>of() : ids) {
             try { review(id, status, null, null, feedback, mentorId, mentorName, mentorRole); n++; }
-            catch (Exception ignored) { /* one bad row should not stop the rest */ }
+            catch (ResponseStatusException e) {
+                failed.add(Map.of("id", id, "reason", e.getReason() == null ? "Refused" : e.getReason()));
+            } catch (Exception e) {
+                failed.add(Map.of("id", id, "reason", "Could not be reviewed"));
+            }
         }
-        return Map.of("reviewed", n);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("reviewed", n);
+        out.put("approved", "APPROVED".equals(status) ? n : 0);
+        out.put("failed", failed.size());
+        out.put("failures", failed);
+        return out;
     }
 
     /* ------------------------------------------------------ who may touch a task */
@@ -223,8 +280,10 @@ public class AssignmentService {
     private Assignment requireVisibleTo(String assignmentId, String staffId, String staffRole) {
         Assignment a = require(assignmentId);
         if ("ADMIN".equals(staffRole) || "SUPER_ADMIN".equals(staffRole)) return a;
-        boolean mine = cover.learnersVisibleTo(staffId).stream()
-                .anyMatch(l -> l.getId().equals(a.getLearnerId()));
+        /* the single-learner form of the same visibility rule, rather than loading every
+           learner the mentor can see to look for one */
+        boolean mine = learners.findById(a.getLearnerId())
+                .map(l -> cover.canSee(staffId, l)).orElse(false);
         if (!mine) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "That learner is not yours.");
         }
@@ -299,13 +358,16 @@ public class AssignmentService {
                 .filter(l -> !l.isOnHold())
                 .map(Learner::getId).collect(Collectors.toSet());
         Instant now = Instant.now();
-        return assignments.findAll().stream()
-                .filter(a -> mine.contains(a.getLearnerId()))
-                .filter(a -> a.getDueAt() != null && a.getDueAt().isBefore(now))
-                .filter(a -> !"APPROVED".equals(a.getStatus()))
-                .sorted(Comparator.comparing(Assignment::getDueAt))
+        if (mine.isEmpty()) return new ArrayList<>();
+        /* only the late rows of these learners, filtered and sorted in the database over the
+           (learnerId, status) index, instead of the whole assignments collection */
+        List<Assignment> late = mongo.find(Query.query(Criteria.where("learnerId").in(mine)
+                        .and("dueAt").lt(now).and("status").ne("APPROVED"))
+                .with(Sort.by(Sort.Direction.ASC, "dueAt")), Assignment.class);
+        Map<String, String> names = learnerNames(late.stream().map(Assignment::getLearnerId).toList());
+        return late.stream()
                 .map(a -> {
-                    Map<String, Object> m = view(a);
+                    Map<String, Object> m = view(a, names);
                     m.put("daysLate", ChronoUnit.DAYS.between(a.getDueAt(), now));
                     return m;
                 }).collect(Collectors.toList());
@@ -318,12 +380,27 @@ public class AssignmentService {
     public Rubric saveRubric(Rubric r) { return rubrics.save(r); }
 
     private Map<String, Object> view(Assignment a) {
+        return view(a, learnerNames(a.getLearnerId() == null ? List.of() : List.of(a.getLearnerId())));
+    }
+
+    /** Learner id to display name for a list of rows, in two reads whatever the length. */
+    private Map<String, String> learnerNames(Collection<String> learnerIds) {
+        Map<String, String> out = new HashMap<>();
+        Set<String> ids = learnerIds.stream().filter(Objects::nonNull).collect(Collectors.toSet());
+        if (ids.isEmpty()) return out;
+        Map<String, String> userOf = new HashMap<>();
+        learners.findAllById(ids).forEach(l -> { if (l.getUserId() != null) userOf.put(l.getId(), l.getUserId()); });
+        Map<String, String> nameOf = new HashMap<>();
+        users.findAllById(new HashSet<>(userOf.values())).forEach(u -> nameOf.put(u.getId(), u.getFullName()));
+        userOf.forEach((lid, uid) -> { if (nameOf.get(uid) != null) out.put(lid, nameOf.get(uid)); });
+        return out;
+    }
+
+    private Map<String, Object> view(Assignment a, Map<String, String> names) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", a.getId());
         m.put("learnerId", a.getLearnerId());
-        m.put("learner", learners.findById(a.getLearnerId())
-                .flatMap(l -> users.findById(l.getUserId()))
-                .map(User::getFullName).orElse("Learner"));
+        m.put("learner", names.getOrDefault(a.getLearnerId(), "Learner"));
         m.put("title", a.getTitle());
         m.put("brief", a.getBrief());
         m.put("origin", a.getOrigin());
@@ -356,6 +433,12 @@ public class AssignmentService {
             p.setTaskStatus(status);
             p.setUpdatedAt(Instant.now());
             progress.save(p);
+            /*
+             * Every submission and every review, single, bulk or from the mentor's home
+             * screen, comes through here, so this is the one place the approved count on
+             * the learner's snapshot is kept in step with their tasks.
+             */
+            snapshots.refresh(a.getLearnerId());
         });
     }
 

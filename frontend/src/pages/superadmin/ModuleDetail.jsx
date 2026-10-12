@@ -5,14 +5,14 @@ import { useToast } from '../../context/ToastContext'
 import { useDialog } from '../../components/Dialog'
 import Icon from '../../components/Icon'
 import { TableSkeleton } from '../../components/Skeletons'
-import { Card, Empty, Page, Stat, Tag } from '../../components/Ui'
+import { Card, Empty, LoadError, Page, Stat, Tag } from '../../components/Ui'
 
 /**
  * One module, its chapters open as an accordion.
  *
  * The accordion is the point. A chapter is only interesting for what is inside it, and
  * a list that makes you navigate away to find out has you clicking back and forth to
- * answer "which chapter is missing its topicsa".
+ * answer "which chapter is missing its topics".
  */
 export default function ModuleDetail() {
   const { id } = useParams()
@@ -22,8 +22,13 @@ export default function ModuleDetail() {
   const [tree, setTree] = useState(null)
   const [open, setOpen] = useState({})
 
-  const load = () => api.get('/super/catalogue').then(setTree)
+  const [loadError, setLoadError] = useState(null)
+
+  const load = () => api.get('/super/catalogue')
+    .then((t) => { setTree(t); setLoadError(null) })
+    .catch((e) => setLoadError(e.message))
   useEffect(() => { load() }, [id])
+  if (loadError && !tree) return <Page title="Module"><LoadError error={loadError} onRetry={load} /></Page>
   if (!tree) return <TableSkeleton />
 
   const m = tree.modules.find((x) => x.id === id)
@@ -151,6 +156,7 @@ export default function ModuleDetail() {
   const parts = (c) => [
     [c.topics.length > 0, 'has topics'],
     [c.topics.length > 0 && c.topics.every((t) => t.hasVideo), 'every topic has a video'],
+    /* c.questions counts reviewed questions only; a model draft is never served */
     [!c.test.enabled || c.questions > 0, 'test written'],
     [!c.assignment?.enabled || !!c.assignment?.title, 'task written']
   ]

@@ -2,11 +2,18 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
 import java.time.LocalDate;
 import java.util.*;
 
 /** A day's settled total, so streaks and charts never re-add thousands of sessions. */
+/* a learner's history is read newest first; the nightly roll reads one day */
+@CompoundIndexes({
+    @CompoundIndex(name = "learner_day", def = "{'learnerId': 1, 'day': -1}"),
+    @CompoundIndex(name = "day", def = "{'day': 1}")
+})
 @Document("study_days")
 public class StudyDay {
     @Id private String id;               // learnerId:yyyy-MM-dd

@@ -3,6 +3,8 @@ package com.proitbridge.lms.domain;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 
 import java.time.Instant;
 
@@ -13,6 +15,11 @@ import java.time.Instant;
  * question anyone asks is where to resume. A history of every position would be a
  * large table answering a question nobody has.
  */
+/* saving a position looks one row up; continue-watching reads the newest rows first */
+@CompoundIndexes({
+    @CompoundIndex(name = "learner_video", def = "{'learnerId': 1, 'videoRef': 1}"),
+    @CompoundIndex(name = "learner_updated", def = "{'learnerId': 1, 'updatedAt': -1}")
+})
 @Document("watch_positions")
 public class WatchPosition {
 

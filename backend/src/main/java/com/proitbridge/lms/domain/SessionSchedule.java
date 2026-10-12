@@ -2,12 +2,19 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import java.util.*;
 
 /**
  * A session that repeats. Slots are generated from this rather than a mentor
  * creating each week by hand, which is how a schedule quietly stops happening.
  */
+/* generate() reads only the active schedules */
+@CompoundIndexes({
+    @CompoundIndex(name = "active", def = "{'active': 1}"),
+    @CompoundIndex(name = "mentor", def = "{'mentorId': 1}")
+})
 @Document("session_schedules")
 public class SessionSchedule {
     @Id private String id;
@@ -35,6 +42,12 @@ public class SessionSchedule {
     private String topic;
     private String speaker;
     private boolean published = true;
+    /*
+     * Occurrences taken off the board on purpose, as scheduleId@startsAt. A dropped
+     * session with nobody booked is deleted, and the generator would put it straight
+     * back the next night; this is what tells it not to.
+     */
+    private Set<String> skippedKeys = new LinkedHashSet<>();
 
     public String getKind() { return kind; }
     public void setKind(String kind) { this.kind = kind; }
@@ -68,6 +81,11 @@ public class SessionSchedule {
     public void setSpeaker(String speaker) { this.speaker = speaker; }
     public boolean isPublished() { return published; }
     public void setPublished(boolean published) { this.published = published; }
+
+    public Set<String> getSkippedKeys() { return skippedKeys; }
+    public void setSkippedKeys(Set<String> skippedKeys) {
+        this.skippedKeys = skippedKeys == null ? new LinkedHashSet<>() : skippedKeys;
+    }
 
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }

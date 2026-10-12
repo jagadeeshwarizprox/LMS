@@ -54,6 +54,9 @@ export default function ChapterPlayer() {
   /* which topic is open in the player; null is the list */
   const [openTopic, setOpenTopic] = useState(null)
   const [topicData, setTopicData] = useState(null)
+  /* one request at a time per action: a double click used to file two quiz attempts
+     against a limit of two, or hand the same task in twice */
+  const [busy, setBusy] = useState(null)   // null | 'quiz' | 'teach' | 'task'
 
   /* the same silent skeleton as the learner record: a locked or missing chapter looked
      exactly like a slow one, with no way to tell why or to retry */
@@ -95,9 +98,13 @@ export default function ChapterPlayer() {
   /* the player reports real progress; 95 percent counts as watched */
   const onWatchProgress = async (pct) => {
     if (pct < 95 || !openTopic || topicData?.topic?.watched) return
-    await api.post(`/learner/topics/${openTopic}/watched`)
-    await load()
-    setTopicData(await api.get(`/learner/topics/${openTopic}`))
+    /* the server checks the recorded playback now and can refuse; say why rather
+       than leaving an unhandled rejection and a topic that silently stays open */
+    try {
+      await api.post(`/learner/topics/${openTopic}/watched`)
+      await load()
+      setTopicData(await api.get(`/learner/topics/${openTopic}`))
+    } catch (e) { toast.push(e.message, 'bad') }
   }
 
   /* finishing one topic moves to the next, and the last one hands over to the test */
@@ -110,29 +117,43 @@ export default function ChapterPlayer() {
   }
 
   const submitQuiz = async () => {
+    if (busy) return
+    setBusy('quiz')
     try {
       const r = await api.post(`/learner/chapters/${id}/quiz`, answers)
       setResult(r)
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
+    finally { setBusy(null) }
   }
 
   const submitTeach = async () => {
+    if (busy) return
+    setBusy('teach')
     try {
       const r = await api.post(`/learner/chapters/${id}/concept-check`, { explanation })
       setTeachResult(r)
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
+    finally { setBusy(null) }
   }
 
   const submitTask = async () => {
+    if (busy) return
+    setBusy('task')
     try {
       await api.post(`/learner/chapters/${id}/task`,
         { submissionUrl: taskUrl, fileIds: taskFiles.map((f) => f.id), notes: taskNotes })
       toast.push('Task sent to your mentor.')
+      /* cleared once it is in, so the next press is a new submission and not the
+         same one again */
+      setTaskUrl('')
+      setTaskFiles([])
+      setTaskNotes('')
       await load()
       await reload()
     } catch (e) { toast.push(e.message, 'bad') }
+    finally { setBusy(null) }
   }
 
   return (
@@ -347,10 +368,10 @@ export default function ChapterPlayer() {
           <div className="d-flex gap-2 align-items-center flex-wrap">
             <button
               className="btn btn-pib"
-              disabled={chapter?.testPassed || chapter?.attemptsLeft === 0}
+              disabled={busy === 'quiz' || chapter?.testPassed || chapter?.attemptsLeft === 0}
               onClick={submitQuiz}
             >
-              Submit answers
+              {busy === 'quiz' ? 'Submitting' : 'Submit answers'}
             </button>
             {result && (
               <>
@@ -383,10 +404,14 @@ export default function ChapterPlayer() {
             placeholder="Start with what problem this solves, then how it works."
           />
           <div className="d-flex gap-2 align-items-center">
-            <button className="btn btn-pib" onClick={submitTeach}>Check my explanation</button>
+            <button className="btn btn-pib" onClick={submitTeach}
+              disabled={busy === 'teach' || !explanation.trim()}>
+              {busy === 'teach' ? 'Checking' : 'Check my explanation'}
+            </button>
             {teachResult && (
               <span style={{ fontSize: '.88rem' }}>
-                <strong className="mono me-2">{teachResult.score}</strong>{teachResult.verdict}
+                {teachResult.score != null && <strong className="mono me-2">{teachResult.score}</strong>}
+                {teachResult.verdict}
                 {teachResult.gradedBy && teachResult.gradedBy !== 'rubric' && (
                   <span className="tag tag-batch ms-2">graded by {teachResult.gradedBy}</span>
                 )}
@@ -447,6 +472,7 @@ export default function ChapterPlayer() {
             purpose="TASK"
             label="Attach your notebook, dataset and anything else"
             onAllUploaded={(fs) => setTaskFiles((prev) => [...prev, ...fs])}
+            onRemoved={(f) => setTaskFiles((prev) => prev.filter((x) => x.id !== f.id))}
           />
           <div className="my-3">
             <label className="form-label">Or a link, if it lives somewhere else</label>
@@ -459,8 +485,8 @@ export default function ChapterPlayer() {
               onChange={(e) => setTaskNotes(e.target.value)} />
           </div>
           <button className="btn btn-pib" onClick={submitTask}
-            disabled={!taskUrl && taskFiles.length === 0}>
-            {assignment ? 'Resubmit' : 'Submit'}
+            disabled={busy === 'task' || (!taskUrl && taskFiles.length === 0)}>
+            {busy === 'task' ? 'Sending' : assignment ? 'Resubmit' : 'Submit'}
           </button>
         </Card>
       )}

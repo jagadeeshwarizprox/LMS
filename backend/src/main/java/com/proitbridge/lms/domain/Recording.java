@@ -2,6 +2,8 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import java.time.Instant;
 import java.util.*;
 
@@ -18,6 +20,12 @@ import java.util.*;
  * across every batch, so it is never scoped to one, and scoping it would hide it from
  * most of the people who sat in it.
  */
+/* recordings are matched to sessions by slotId and listed newest first */
+@CompoundIndexes({
+    @CompoundIndex(name = "slot", def = "{'slotId': 1}"),
+    @CompoundIndex(name = "held_on", def = "{'heldOn': -1}"),
+    @CompoundIndex(name = "video", def = "{'videoRef': 1}")
+})
 @Document("recordings")
 public class Recording {
     @Id private String id;

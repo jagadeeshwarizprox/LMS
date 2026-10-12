@@ -2,10 +2,22 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import java.time.Instant;
 import java.util.*;
 
 /** Every credential and notification mail is recorded, sent or not. */
+/*
+ * Indexes for twenty thousand learners and their logs.
+ *
+ * Paged newest first, and looked up per recipient by the onboarding board (was this
+ * person ever sent their credentials) and the learner record.
+ */
+@CompoundIndexes({
+    @CompoundIndex(name = "sent", def = "{'sentAt': -1}"),
+    @CompoundIndex(name = "to_sent", def = "{'toEmail': 1, 'sentAt': -1}")
+})
 @Document("mail_log")
 public class MailLog {
     @Id private String id;

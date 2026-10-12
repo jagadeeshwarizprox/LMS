@@ -2,6 +2,9 @@ package com.proitbridge.lms.service;
 
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -29,13 +32,16 @@ public class SetupService {
     private final BatchRepository batches;
     private final LearnerRepository learners;
     private final MeetingRoomRepository rooms;
+    private final MongoTemplate mongo;
 
     public SetupService(SettingsService settings, ModuleRepository modules,
                         ChapterRepository chapters, TopicRepository topics,
                         ResourceRepository resources,
                         QuizQuestionRepository questions, BundleRepository bundles,
                         UserRepository users, BatchRepository batches,
-                        LearnerRepository learners, MeetingRoomRepository rooms) {
+                        LearnerRepository learners, MeetingRoomRepository rooms,
+                        MongoTemplate mongo) {
+        this.mongo = mongo;
         this.settings = settings; this.modules = modules; this.chapters = chapters;
         this.topics = topics;
         this.resources = resources; this.questions = questions; this.bundles = bundles;
@@ -47,8 +53,8 @@ public class SetupService {
                         boolean done, String detail) {}
 
     public Map<String, Object> checklist() {
-        long mentors = users.findAll().stream()
-                .filter(u -> u.getRole() == User.Role.MENTOR && u.isActive()).count();
+        /* active mentors off the role index, not every account read to find them */
+        long mentors = users.findByRoleAndActiveTrue(User.Role.MENTOR).size();
         long moduleCount = modules.count();
         long chapterCount = chapters.count();
         long topicCount = topics.count();
@@ -56,6 +62,7 @@ public class SetupService {
                 .filter(t -> resources.countByTopicId(t.getId()) > 0
                         || (t.getVideoRef() != null && !t.getVideoRef().isBlank()))
                 .count();
+        long learnerCount = learners.count();
         long courses = bundles.findAll().stream()
                 .filter(b -> b.isActive() && !b.getModuleIds().isEmpty()).count();
         boolean walkthrough = !settings.get("onboarding.prereqVideoRef", "").isBlank();
@@ -113,8 +120,8 @@ public class SetupService {
 
             new Step("learner", "Bring in your learners",
                 "Import the record sheet, or add one by hand to try it first.",
-                "/admin/import", "Import from a sheet", learners.count() > 0,
-                learners.count() == 0 ? null : learners.count() + " learners")
+                "/admin/import", "Import from a sheet", learnerCount > 0,
+                learnerCount == 0 ? null : learnerCount + " learners")
         );
 
         long done = steps.stream().filter(Step::done).count();
@@ -163,7 +170,9 @@ public class SetupService {
                                 || (t.getVideoRef() != null && !t.getVideoRef().isBlank());
                         if (!hasMaterial) emptyTopics++;
                     }
-                    if (c.getTest().isEnabled() && questions.findByChapterId(c.getId()).isEmpty()) {
+                    /* a model draft is never served, so a test holding only drafts is empty */
+                    if (c.getTest().isEnabled() && questions.findByChapterId(c.getId()).stream()
+                            .allMatch(com.proitbridge.lms.domain.QuizQuestion::isDraft)) {
                         testsWithoutQuestions++;
                     }
                 }
@@ -172,7 +181,6 @@ public class SetupService {
             if (emptyChapters > 0) gaps.add(emptyChapters + " chapters with no topics");
             if (emptyTopics > 0) gaps.add(emptyTopics + " topics with nothing attached");
             if (testsWithoutQuestions > 0) gaps.add(testsWithoutQuestions + " tests with no questions");
-            if (b.getPrice() <= 0) gaps.add("No price set");
 
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", b.getId());
@@ -181,8 +189,8 @@ public class SetupService {
             m.put("topics", topicTotal);
             m.put("gaps", gaps);
             m.put("ready", gaps.isEmpty());
-            m.put("learners", learners.findAll().stream()
-                    .filter(l -> b.getId().equals(l.getBundleId())).count());
+            /* a count off the bundleId index prefix, not every learner per course */
+            m.put("learners", mongo.count(new Query(Criteria.where("bundleId").is(b.getId())), Learner.class));
             return m;
         }).collect(Collectors.toList());
     }

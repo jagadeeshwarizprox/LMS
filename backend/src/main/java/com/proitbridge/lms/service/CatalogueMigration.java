@@ -39,14 +39,16 @@ public class CatalogueMigration {
     private final ModuleRepository modules;
     private final ProgressRepository progress;
     private final AppSettingRepository settings;
+    private final ProgressSnapshotService snapshots;
 
     public CatalogueMigration(MongoTemplate mongo, ChapterRepository chapters,
                               TopicRepository topics, ResourceRepository resources,
                               ModuleRepository modules, ProgressRepository progress,
-                              AppSettingRepository settings) {
+                              AppSettingRepository settings, ProgressSnapshotService snapshots) {
         this.mongo = mongo; this.chapters = chapters; this.topics = topics;
         this.resources = resources; this.modules = modules; this.progress = progress;
         this.settings = settings;
+        this.snapshots = snapshots;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -134,6 +136,12 @@ public class CatalogueMigration {
         done.setValue("yes");
         settings.save(done);
         log.info("catalogue migration: {} chapters split into chapter plus topic", made);
+        /*
+         * This rewrote progress rows and the shape of every course, possibly after the
+         * snapshot backfill had already worked some learners out on the old shape. Mark
+         * them all stale so they recompute against what is there now.
+         */
+        snapshots.markAllStale("catalogue migration");
     }
 
     /** The fields the old Chapter had and the new one does not, read straight from Mongo. */

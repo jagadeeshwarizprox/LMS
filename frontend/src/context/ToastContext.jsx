@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 
 const ToastContext = createContext(null)
 
@@ -16,6 +16,8 @@ const ToastContext = createContext(null)
 export function ToastProvider({ children }) {
   const [items, setItems] = useState([])
   const timers = useRef({})
+  /* message -> when it was last shown, so the same failure is never said twice */
+  const recent = useRef({})
 
   const dismiss = useCallback((id) => {
     setItems((list) => list.map((t) => (t.id === id ? { ...t, shown: false } : t)))
@@ -23,6 +25,7 @@ export function ToastProvider({ children }) {
   }, [])
 
   const push = useCallback((message, tone = 'good') => {
+    recent.current[message] = Date.now()
     const id = Math.random().toString(36).slice(2)
     setItems((list) => [...list, { id, message, tone, shown: false }])
     /* paint it off screen first, then slide it in on the next frame */
@@ -66,6 +69,33 @@ export function ToastProvider({ children }) {
     setItems((list) => list.map((t) => (t.id === id ? { ...t, undo } : t)))
     return id
   }, [dismiss, push])
+
+  /*
+   * The one listener for 'pib:request-failed', which api/client.js fires on every
+   * failed request. Before this nothing heard it, so a page that loads with .then and
+   * no .catch failed in silence.
+   *
+   * The rule: every failure is announced once. Most screens already catch their own
+   * errors and toast the same message, so the global toast waits a moment and is
+   * dropped if that exact message was shown in the last two seconds, whether by the
+   * caller or by an earlier identical failure (a page firing three requests at a dead
+   * server says it once, not three times). A 401 that did not end the session is a
+   * background request to an endpoint this role cannot use; the screen copes with it
+   * and a toast about it would only alarm.
+   */
+  useEffect(() => {
+    const onFail = (e) => {
+      const { message, status } = e.detail || {}
+      if (!message || status === 401) return
+      setTimeout(() => {
+        const last = recent.current[message]
+        if (last && Date.now() - last < 2000) return
+        push(message, 'bad')
+      }, 300)
+    }
+    window.addEventListener('pib:request-failed', onFail)
+    return () => window.removeEventListener('pib:request-failed', onFail)
+  }, [push])
 
   return (
     <ToastContext.Provider value={{ push, pushUndo }}>

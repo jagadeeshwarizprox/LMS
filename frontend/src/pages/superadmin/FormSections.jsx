@@ -4,7 +4,7 @@ import { useToast } from '../../context/ToastContext'
 import { useDialog } from '../../components/Dialog'
 import Icon from '../../components/Icon'
 import { TableSkeleton } from '../../components/Skeletons'
-import { Card, Empty, Grid, Note, Page, Stat, Switch, Tag } from '../../components/Ui'
+import { Card, Empty, Grid, LoadError, Note, Page, Stat, Switch, Tag } from '../../components/Ui'
 
 const TYPE_LABEL = {
   TEXT: 'Short text', LONG_TEXT: 'Long text', CHOICE: 'Choose one',
@@ -28,13 +28,18 @@ export default function FormSections() {
   const [open, setOpen] = useState(null)          // which section's questions are shown
   const [skills, setSkills] = useState('')
 
+  const [loadError, setLoadError] = useState(null)
   const load = async () => {
-    setRows(await api.get('/super/catalogue/form-sections'))
+    try {
+      setRows(await api.get('/super/catalogue/form-sections'))
+      setLoadError(null)
+    } catch (e) { setLoadError(e.message); return }
     setFields(await api.get('/super/catalogue/form-fields').catch(() => []))
     const s = await api.get('/super/catalogue/settings').catch(() => null)
     setSkills(s?.settings?.find((x) => x.key === 'onboarding.skills')?.value || '')
   }
   useEffect(() => { load() }, [])
+  if (loadError && !rows) return <Page title="Information form"><LoadError error={loadError} onRetry={load} /></Page>
   if (!rows) return <TableSkeleton />
 
   const run = async (fn, msg) => {

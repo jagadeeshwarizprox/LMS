@@ -2,6 +2,10 @@ package com.proitbridge.lms.service;
 
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -32,10 +36,17 @@ public class StudyTimeService {
     private final ProgressRepository progress;
 
     public StudyTimeService(StudySessionRepository sessions, StudyDayRepository days,
-                            LearnerRepository learners, ProgressRepository progress) {
+                            LearnerRepository learners, ProgressRepository progress,
+                            MongoTemplate mongo) {
+        this.mongo = mongo;
         this.sessions = sessions; this.days = days;
         this.learners = learners; this.progress = progress;
     }
+
+    private final MongoTemplate mongo;
+
+    /* how many sessions the idle sweep holds at once */
+    private static final int SWEEP_PAGE = 500;
 
     private static LocalDate today() { return LocalDate.now(IST); }
 
@@ -86,8 +97,20 @@ public class StudyTimeService {
     @Scheduled(fixedDelay = 300_000)
     public void closeIdle() {
         Instant cutoff = Instant.now().minus(IDLE_CUTOFF_MIN, ChronoUnit.MINUTES);
-        for (StudySession s : sessions.findByClosedBy("OPEN")) {
-            if (s.getLastHeartbeatAt().isBefore(cutoff)) close(s, "IDLE");
+        /*
+         * Only the stale ones, over the (closedBy, lastHeartbeatAt) index, a page at a time
+         * by _id. This used to load every open session every five minutes, which at a
+         * thousand learners online is a thousand documents read to close a handful.
+         */
+        String after = null;
+        while (true) {
+            Query q = Query.query(Criteria.where("closedBy").is("OPEN").and("lastHeartbeatAt").lt(cutoff));
+            if (after != null) q.addCriteria(Criteria.where("_id").gt(after));
+            List<StudySession> page = mongo.find(q.with(Sort.by(Sort.Direction.ASC, "_id")).limit(SWEEP_PAGE),
+                    StudySession.class);
+            for (StudySession s : page) close(s, "IDLE");
+            if (page.size() < SWEEP_PAGE) break;
+            after = page.get(page.size() - 1).getId();
         }
     }
 

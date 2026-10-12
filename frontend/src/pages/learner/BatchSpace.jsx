@@ -38,10 +38,14 @@ export default function BatchSpace() {
 
   if (!batch?.code) return <Empty title="No batch assigned yet">The admin team assigns your batch before it starts.</Empty>
 
+  /* the server refuses this until the batch induction is marked held; that refusal
+     used to vanish as an unhandled rejection */
   const watchedInduction = async () => {
-    await api.post('/learner/induction-watched')
-    toast.push('Induction cleared. Your modules are opening.')
-    await reload()
+    try {
+      await api.post('/learner/induction-watched')
+      toast.push('Induction cleared. Your modules are opening.')
+      await reload()
+    } catch (e) { toast.push(e.message, 'bad') }
   }
 
   return (

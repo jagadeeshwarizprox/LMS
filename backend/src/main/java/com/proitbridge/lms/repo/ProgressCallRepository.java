@@ -7,4 +7,6 @@ import java.util.*;
 public interface ProgressCallRepository extends MongoRepository<ProgressCall, String> {
     List<ProgressCall> findByLearnerIdOrderByScheduledForDesc(String learnerId);
     List<ProgressCall> findByMentorId(String mentorId);
+    /* the calls still to be held for a set of learners, one read for a whole desk */
+    List<ProgressCall> findByLearnerIdInAndHeldAtIsNull(Collection<String> learnerIds);
 }

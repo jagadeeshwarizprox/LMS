@@ -2,10 +2,21 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import java.time.Instant;
 import java.util.*;
 
 /** A sharing signal worth a human look. Raised by the anomaly sweep, cleared by an admin. */
+/*
+ * Indexes for twenty thousand learners and their logs.
+ *
+ * The open-flags list, and the sweep's check that a flag is not already raised.
+ */
+@CompoundIndexes({
+    @CompoundIndex(name = "open_created", def = "{'cleared': 1, 'createdAt': -1}"),
+    @CompoundIndex(name = "user_kind_open", def = "{'userId': 1, 'kind': 1, 'cleared': 1}")
+})
 @Document("access_flags")
 public class AccessFlag {
     @Id private String id;

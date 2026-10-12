@@ -24,13 +24,16 @@ public class AdminController {
     private final CurrentUser current;
     private final FeatureService features;
     private final com.proitbridge.lms.repo.LearnerRepository learnerRepo;
+    private final SessionService sessions;
 
     public AdminController(AdminService admin, ImportService importer,
                            ProvisioningService provisioning,
                            OnboardingBoardService onboarding, RecordingService recordings,
                            MentorCoverService cover, SuperAdminService staff,
                            CurrentUser current, FeatureService features,
-                           com.proitbridge.lms.repo.LearnerRepository learnerRepo) {
+                           com.proitbridge.lms.repo.LearnerRepository learnerRepo,
+                           SessionService sessions) {
+        this.sessions = sessions;
         this.admin = admin; this.importer = importer;
         this.provisioning = provisioning; this.onboarding = onboarding;
         this.recordings = recordings; this.cover = cover; this.staff = staff;
@@ -62,54 +65,79 @@ public class AdminController {
 
     @PostMapping("/people")
     public Map<String, Object> saveMentor(@RequestBody Map<String, Object> body) {
-        User u = new User();
-        u.setId((String) body.get("id"));
-        u.setEmail((String) body.get("email"));
-        u.setFullName((String) body.get("fullName"));
-        u.setPhone(Validate.phone((String) body.get("phone"), "Phone number"));
-        u.setWhatsapp(Validate.phone((String) body.get("whatsapp"), "WhatsApp number"));
-        u.setRole(User.Role.MENTOR);
-        u.setReportsToId((String) body.get("reportsToId"));
-        if (u.getId() != null && !staff.isMentor(u.getId())) {
-            throw new org.springframework.web.server.ResponseStatusException(
-                    org.springframework.http.HttpStatus.FORBIDDEN,
-                    "That account is not a mentor. Editing it is a super admin job.");
+        String id = (String) body.get("id");
+        User saved;
+        String pw = null;
+        if (id != null) {
+            if (!staff.isMentor(id)) {
+                throw new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.FORBIDDEN,
+                        "That account is not a mentor. Editing it is a super admin job.");
+            }
+            /* merged onto the stored account; the role cannot be changed from this route */
+            saved = staff.updateStaff(id, body, false, actor());
+        } else {
+            User u = new User();
+            u.setEmail((String) body.get("email"));
+            u.setFullName((String) body.get("fullName"));
+            u.setPhone(Validate.phone((String) body.get("phone"), "Phone number"));
+            u.setWhatsapp(Validate.phone((String) body.get("whatsapp"), "WhatsApp number"));
+            u.setRole(User.Role.MENTOR);
+            String reportsTo = (String) body.get("reportsToId");
+            u.setReportsToId(reportsTo == null || reportsTo.isBlank() ? null : reportsTo);
+            u.setActive(!Boolean.FALSE.equals(body.get("active")));
+            saved = staff.saveStaff(u, null, actor());
+            pw = staff.consumeLastPassword();
         }
-        u.setActive(!Boolean.FALSE.equals(body.get("active")));
-        User saved = staff.saveStaff(u, null, actor());
 
         Map<String, Object> out = new java.util.LinkedHashMap<>();
         out.put("id", saved.getId());
         out.put("email", saved.getEmail());
         out.put("fullName", saved.getFullName());
         out.put("loginId", saved.getLoginId());
-        out.put("password", staff.consumeLastPassword());
+        out.put("password", pw);
         return out;
     }
 
     @PostMapping("/people/{id}/active")
     public Map<String, Object> setMentorActive(@PathVariable String id,
                                                @RequestBody Map<String, Boolean> body) {
-        return staff.setStaffActive(id, Boolean.TRUE.equals(body.get("active")), actor());
+        staff.guardTarget(id, current.get().role());
+        boolean on = Boolean.TRUE.equals(body.get("active"));
+        Map<String, Object> out = staff.setStaffActive(id, on, actor());
+        if (!on) sessions.closeAllFor(id, "DEACTIVATED");
+        return out;
     }
 
     @PostMapping("/people/{id}/reassign-learners")
     public Map<String, Object> reassign(@PathVariable String id,
                                         @RequestBody Map<String, String> body) {
+        staff.guardTarget(id, current.get().role());
         return staff.reassignLearners(id, body.get("toId"), body.get("reason"), actor());
     }
 
     @PostMapping("/people/{id}/reset-password")
     public Map<String, Object> resetMentorPassword(@PathVariable String id) {
+        staff.guardTarget(id, current.get().role());
         return staff.resetToDefault(id, actor());
     }
 
+    /**
+     * The register, one page at a time: {rows, total, page, size}.
+     *
+     * Always paged, page 0 when no page is given. The only caller is the register
+     * screen, and an unfiltered list of every learner is not naturally bounded by
+     * anything, so there is no unpaged form to keep.
+     */
     @GetMapping("/register")
-    public List<Map<String, Object>> register(@RequestParam(required = false) String trackType,
-                                              @RequestParam(required = false) String batchId,
-                                              @RequestParam(required = false) String mentorId,
-                                              @RequestParam(required = false) String q) {
-        return admin.register(trackType, batchId, mentorId, q);
+    public Map<String, Object> register(@RequestParam(required = false) String trackType,
+                                        @RequestParam(required = false) String batchId,
+                                        @RequestParam(required = false) String mentorId,
+                                        @RequestParam(required = false) String q,
+                                        @RequestParam(required = false) Boolean onboarded,
+                                        @RequestParam(required = false) Integer page,
+                                        @RequestParam(required = false) Integer size) {
+        return admin.register(trackType, batchId, mentorId, q, onboarded, page, size);
     }
 
     /* ------------------------------------------------------------- provisioning */
@@ -230,7 +258,11 @@ public class AdminController {
 
     /** Stages one and two, made visible: who is stuck where, and for how long. */
     @GetMapping("/onboarding-board")
-    public Map<String, Object> onboardingBoard() { return onboarding.board(); }
+    public Map<String, Object> onboardingBoard(@RequestParam(required = false) String stuckOn,
+                                               @RequestParam(required = false) Integer page,
+                                               @RequestParam(required = false) Integer size) {
+        return onboarding.board(stuckOn, AdminQueries.page(page), AdminQueries.size(size));
+    }
 
     /** Sessions held against sessions recorded, so a missing week is visible. */
 
@@ -276,6 +308,13 @@ public class AdminController {
         return Map.of("ended", true);
     }
 
+    /** The mail log, paged newest first: {rows, total, page, size}. */
     @GetMapping("/mail-log")
-    public List<MailLog> mailLog() { return admin.mailLog(); }
+    public Map<String, Object> mailLog(@RequestParam(required = false) String to,
+                                       @RequestParam(required = false) String kind,
+                                       @RequestParam(required = false) String status,
+                                       @RequestParam(required = false) Integer page,
+                                       @RequestParam(required = false) Integer size) {
+        return admin.mailLog(to, kind, status, page, size);
+    }
 }

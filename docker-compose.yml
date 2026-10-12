@@ -1,17 +1,32 @@
-# One command to get everything running:  docker compose up
+# One command to run everything:  docker compose up -d --build
 #
-# Mongo, the API and the built frontend. The API waits for Mongo to answer a ping
-# before it starts, so a first run on a cold machine does not fail on a race.
+# Copy .env.example to .env first and fill in the values marked "must set". Compose
+# refuses to start without them rather than starting with a guessable secret.
+#
+# Mongo, the API and the built frontend. Nothing but the frontend is reachable from
+# outside: the browser talks to nginx, and nginx forwards /api/ to the API container.
 services:
   mongo:
     image: mongo:7
     container_name: pib-mongo
-    ports:
-      - "27017:27017"
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-pib}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?Set MONGO_PASSWORD in .env}
+    # no published port: only the API reaches the database. To inspect it from the
+    # host while developing, uncomment the next two lines (bound to this machine only)
+    # ports:
+    #   - "127.0.0.1:27017:27017"
+    # WiredTiger cache. Mongo's own default is half of (RAM - 1 GB), which on a shared
+    # 8 GB server fights the JVM for memory. 2 GB suits 8 GB RAM; use 5-6 on 16 GB.
+    command: ["--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-2}"]
+    ulimits:
+      nofile: { soft: 64000, hard: 64000 }
+    # mem_limit: 3500m     # 8 GB server: cache + connections + index builds
     volumes:
       - pib-mongo-data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand({ping:1}).ok"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -20,33 +35,86 @@ services:
     build:
       context: ./backend
     container_name: pib-api
+    restart: unless-stopped
     depends_on:
       mongo:
         condition: service_healthy
     environment:
-      MONGODB_URI: mongodb://mongo:27017/pib_lms
-      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-real-secret-at-least-32-chars}
+      # pool sized for 200 Tomcat threads: most requests hold one connection at a time
+      MONGODB_URI: mongodb://${MONGO_USER:-pib}:${MONGO_PASSWORD}@mongo:27017/pib_lms?authSource=admin&maxPoolSize=${MONGO_POOL_MAX:-100}&minPoolSize=10&maxIdleTimeMS=120000&maxConnecting=4&connectTimeoutMS=5000&serverSelectionTimeoutMS=10000
+      # heap = 75% of the container limit (mem_limit below); without a limit, of host RAM
+      JAVA_OPTS: ${JAVA_OPTS:--XX:MaxRAMPercentage=75 -XX:InitialRAMPercentage=50 -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+ExitOnOutOfMemoryError}
+      TOMCAT_MAX_THREADS: ${TOMCAT_MAX_THREADS:-200}
+      TOMCAT_ACCEPT_COUNT: ${TOMCAT_ACCEPT_COUNT:-200}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (openssl rand -base64 48)}
+      LMS_BASE_URL: ${LMS_BASE_URL:-http://localhost:8081}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8081}
       # without these, a fresh database has no users and nobody can sign in
-      BOOTSTRAP_EMAIL: ${BOOTSTRAP_EMAIL:-admin@proitbridge.com}
-      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-change-me-on-first-sign-in}
+      BOOTSTRAP_EMAIL: ${BOOTSTRAP_EMAIL:?Set BOOTSTRAP_EMAIL in .env}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:?Set BOOTSTRAP_PASSWORD in .env}
       BOOTSTRAP_NAME: ${BOOTSTRAP_NAME:-Super admin}
-      MAIL_ENABLED: "false"
-      CORS_ORIGINS: http://localhost:8081
+      MAIL_ENABLED: ${MAIL_ENABLED:-false}
+      MAIL_FROM: ${MAIL_FROM:-no-reply@proitbridge.com}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_AUTH: ${SMTP_AUTH:-true}
+      SMTP_TLS: ${SMTP_TLS:-true}
+      AI_ENABLED: ${AI_ENABLED:-false}
+      OLLAMA_URL: ${OLLAMA_URL:-http://localhost:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1}
+      VIDEO_PROVIDER: ${VIDEO_PROVIDER:-YOUTUBE}
+      CF_CUSTOMER_CODE: ${CF_CUSTOMER_CODE:-}
+      CF_STREAM_KEY_ID: ${CF_STREAM_KEY_ID:-}
+      CF_STREAM_PRIVATE_KEY: ${CF_STREAM_PRIVATE_KEY:-}
+      LMS_WALKTHROUGH_URL: ${LMS_WALKTHROUGH_URL:-}
       FILES_DIR: /data/files
-      AI_ENABLED: "false"      # set true and point OLLAMA_URL at a reachable host
-    ports:
-      - "8080:8080"
+      IMPORT_WATCH_DIR: ${IMPORT_WATCH_DIR:-}
+    # not published: nginx forwards /api/ here over the compose network
+    expose:
+      - "8080"
+    # 8 GB server: 3g (heap ~2.25 GB). 16 GB server: 6g. Uncomment once sized by the load test.
+    # mem_limit: 3g
+    ulimits:
+      nofile: { soft: 65535, hard: 65535 }
     volumes:
       - pib-files:/data/files
 
   web:
     build:
       context: ./frontend
+      args:
+        # same-origin: the browser calls /api on this host and nginx forwards it
+        VITE_API_BASE: /api
     container_name: pib-web
+    restart: unless-stopped
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      API_UPSTREAM: http://api:8080
     ports:
-      - "8081:80"
+      - "${WEB_PORT:-8081}:8080"
+
+  # ---------------------------------------------------------------- load test only
+  # Never started by "up": the profile keeps it out. loadtest/run.sh uses it to seed
+  # through the compose network, since mongo has no published port.
+  seed:
+    image: python:3.12-slim
+    profiles: ["loadtest"]
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGODB_URI: mongodb://${MONGO_USER:-pib}:${MONGO_PASSWORD}@mongo:27017/pib_lms?authSource=admin
+      LT_LEARNERS: ${LT_LEARNERS:-20000}
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    volumes:
+      - ./loadtest:/lt
+    entrypoint: ["sh", "-c", "pip install -q -r /lt/seed/requirements.txt && exec python /lt/seed/seed.py --out /lt/data \"$$@\"", "seed"]
+    command: []
 
 volumes:
   pib-mongo-data:

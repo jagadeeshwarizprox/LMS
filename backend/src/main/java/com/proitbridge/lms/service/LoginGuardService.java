@@ -3,6 +3,9 @@ package com.proitbridge.lms.service;
 import com.proitbridge.lms.domain.LoginAttempt;
 import com.proitbridge.lms.repo.LoginAttemptRepository;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -29,17 +32,19 @@ import java.util.stream.Collectors;
 public class LoginGuardService {
 
     private final LoginAttemptRepository attempts;
+    private final MongoTemplate mongo;
     private final int perAccount;
     private final int lockMinutes;
     private final int perIp;
     private final int ipWindowMinutes;
 
-    public LoginGuardService(LoginAttemptRepository attempts,
+    public LoginGuardService(LoginAttemptRepository attempts, MongoTemplate mongo,
                              @Value("${lms.auth.max-per-account}") int perAccount,
                              @Value("${lms.auth.lock-minutes}") int lockMinutes,
                              @Value("${lms.auth.max-per-ip}") int perIp,
                              @Value("${lms.auth.ip-window-minutes}") int ipWindowMinutes) {
         this.attempts = attempts;
+        this.mongo = mongo;
         this.perAccount = perAccount;
         this.lockMinutes = lockMinutes;
         this.perIp = perIp;
@@ -125,17 +130,21 @@ public class LoginGuardService {
     /** Clearing a lockout is deleting the failures, so the count starts again at zero. */
     public void unlock(String email) {
         String key = email.trim().toLowerCase();
-        attempts.findByEmailAndAtAfter(key, Instant.now().minus(lockMinutes, ChronoUnit.MINUTES))
-                .stream().filter(a -> !a.isSuccess())
-                .forEach(attempts::delete);
+        /* one delete on the (email, at) index rather than read-then-delete row by row */
+        mongo.remove(new Query(Criteria.where("email").is(key)
+                .and("at").gt(Instant.now().minus(lockMinutes, ChronoUnit.MINUTES))
+                .and("success").is(false)), LoginAttempt.class);
     }
 
     /** Attempts are only useful while they are recent. Anything older is noise. */
     @Scheduled(cron = "0 40 3 * * *")
     public void prune() {
+        /*
+         * One ranged delete on the (at) index. This read every attempt ever recorded into
+         * memory and deleted the old ones a row at a time; with a thousand people signing
+         * in daily the collection is tens of thousands of rows by the end of a week.
+         */
         Instant cutoff = Instant.now().minus(7, ChronoUnit.DAYS);
-        attempts.findAll().stream()
-                .filter(a -> a.getAt().isBefore(cutoff))
-                .forEach(attempts::delete);
+        mongo.remove(new Query(Criteria.where("at").lt(cutoff)), LoginAttempt.class);
     }
 }

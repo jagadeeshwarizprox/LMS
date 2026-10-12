@@ -3,8 +3,10 @@ package com.proitbridge.lms.service;
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.security.SecureRandom;
 import java.time.Instant;
@@ -31,16 +33,19 @@ public class ProvisioningService {
     private final MailService mail;
     private final ActivityService activity;
     private final CredentialService credentials;
+    private final LearnerMoveRepository moves;
     private final String walkthroughUrl;
     private final String baseUrl;
+    private final ProgressSnapshotService snapshots;
 
     public ProvisioningService(UserRepository users, LearnerRepository learners,
                                BatchRepository batches, BundleRepository bundles,
                                IntakeFormRepository intakeForms, PasswordEncoder encoder,
                                MailService mail, ActivityService activity,
-                               CredentialService credentials,
+                               CredentialService credentials, LearnerMoveRepository moves,
                                @Value("${lms.app.walkthrough-url}") String walkthroughUrl,
-                               @Value("${lms.app.base-url}") String baseUrl) {
+                               @Value("${lms.app.base-url}") String baseUrl,
+                               ProgressSnapshotService snapshots) {
         this.users = users;
         this.learners = learners;
         this.batches = batches;
@@ -50,13 +55,65 @@ public class ProvisioningService {
         this.mail = mail;
         this.activity = activity;
         this.credentials = credentials;
+        this.moves = moves;
         this.walkthroughUrl = walkthroughUrl;
         this.baseUrl = baseUrl;
+        this.snapshots = snapshots;
     }
 
+    /** bundleId wins over bundleName when a screen picked the course from the catalogue. */
     public record RecordRow(String fullName, String email, String phone, String whatsapp,
                             String bundleName, Learner.TrackType trackType, String batchCode,
-                            LocalDate joinedOn, String sourceRow) {}
+                            LocalDate joinedOn, String sourceRow, String bundleId) {}
+
+    /** The status every caller and screen reads for "already here, nothing changed". */
+    public static final String EXISTS = "EXISTS";
+    /** A row that could not be applied as written. Nothing is created for it. */
+    public static final String ERROR = "ERROR";
+
+    /**
+     * What on a row cannot be resolved, or null when it all can.
+     *
+     * A course name used to be matched loosely ("Data" found "Data Analyst" or "Data
+     * Scientist", whichever came first) and an unknown batch code quietly created a new
+     * batch with no mentor. Either way the learner landed somewhere nobody chose. Both
+     * are now reported on the row and the row is left alone.
+     */
+    private String rowProblem(RecordRow row) {
+        boolean courseGiven = (row.bundleId() != null && !row.bundleId().isBlank())
+                || (row.bundleName() != null && !row.bundleName().isBlank());
+        if (courseGiven && resolveBundle(row).isEmpty()) {
+            return "No course called \"" + (row.bundleName() == null ? row.bundleId() : row.bundleName().trim())
+                    + "\". Use the course name exactly as it is in the catalogue.";
+        }
+        if (row.trackType() == Learner.TrackType.BATCH
+                && row.batchCode() != null && !row.batchCode().isBlank()
+                && batches.findByCode(row.batchCode().trim().toUpperCase()).isEmpty()) {
+            return "No batch " + row.batchCode().trim().toUpperCase()
+                    + ". Create it under Batches first, with its mentor, then import again.";
+        }
+        return null;
+    }
+
+    /** What the enrol form puts in sourceRow, as opposed to a sheet's row number. */
+    public static final String MANUAL_SOURCE = "manual";
+
+    /**
+     * An admin has moved this learner by hand, so a sheet does not get to move them back.
+     *
+     * Only a move of track or batch counts, because only those are what an upgrade would
+     * undo. Any move at all used to block it, so a learner whose mentor had been changed,
+     * or who had been put on hold and resumed, could never be upgraded from the sheet.
+     * And the enrol form is itself an admin acting by hand, today, on this learner: the
+     * check exists to stop a stale sheet overruling a person, not to stop a person.
+     */
+    private static final Set<String> PLACEMENT_MOVES = Set.of("TRACK", "BATCH");
+
+    private boolean movedByHand(Learner l, RecordRow row) {
+        if (MANUAL_SOURCE.equals(row.sourceRow())) return false;
+        return moves.findByLearnerIdOrderByAtDesc(l.getId()).stream()
+                .anyMatch(m -> m.getKind() != null && PLACEMENT_MOVES.contains(m.getKind()));
+    }
 
     public record Outcome(String email, String status, String detail, String learnerId) {}
 
@@ -72,8 +129,11 @@ public class ProvisioningService {
             return new Outcome(row.email(), "SKIPPED", "No email on the row.", null);
         }
         String email = row.email().trim().toLowerCase();
-        Optional<User> existing = users.findByEmailIgnoreCase(email);
+        /* exact match on the unique email index; see CredentialService.accountByEmail */
+        Optional<User> existing = credentials.accountByEmail(email);
         if (existing.isEmpty()) {
+            String problem = rowProblem(row);
+            if (problem != null) return new Outcome(email, ERROR, problem, null);
             return new Outcome(email, "CREATED", "New. An account would be made.", null);
         }
         User u = existing.get();
@@ -83,9 +143,16 @@ public class ProvisioningService {
         }
         if (l.getTrackType() == Learner.TrackType.BATCH
                 && row.trackType() == Learner.TrackType.PREMIUM) {
+            if (movedByHand(l, row)) {
+                return new Outcome(email, EXISTS,
+                        "On batch, but an admin has moved them by hand, so the sheet would not change them.",
+                        l.getId());
+            }
+            String problem = rowProblem(row);
+            if (problem != null) return new Outcome(email, ERROR, problem, l.getId());
             return new Outcome(email, "UPGRADED", "On batch now, would move to premium.", l.getId());
         }
-        return new Outcome(email, "EXISTING", "Already on the platform. Nothing would change.",
+        return new Outcome(email, EXISTS, "Already on the platform. Nothing would change.",
                 l.getId());
     }
 
@@ -99,7 +166,7 @@ public class ProvisioningService {
         }
         String email = row.email().trim().toLowerCase();
 
-        Optional<User> existing = users.findByEmailIgnoreCase(email);
+        Optional<User> existing = credentials.accountByEmail(email);
         if (existing.isPresent()) {
             User u = existing.get();
             Learner l = learners.findByUserId(u.getId()).orElse(null);
@@ -108,16 +175,28 @@ public class ProvisioningService {
             }
             if (l.getTrackType() == Learner.TrackType.BATCH
                     && row.trackType() == Learner.TrackType.PREMIUM) {
+                if (movedByHand(l, row)) {
+                    return new Outcome(email, EXISTS,
+                            "An admin has moved this learner by hand, so the sheet did not change them.",
+                            l.getId());
+                }
+                String problem = rowProblem(row);
+                if (problem != null) return new Outcome(email, ERROR, problem, l.getId());
                 l.setTrackType(Learner.TrackType.PREMIUM);
                 l.setUpgradedFromBatch(true);
                 l.setBatchId(null);
-                resolveBundle(row.bundleName()).ifPresent(b -> l.setBundleId(b.getId()));
+                resolveBundle(row).ifPresent(b -> l.setBundleId(b.getId()));
                 learners.save(l);
+                /* the sheet can carry a different course, which is a different denominator */
+                snapshots.refresh(l);
                 activity.log(null, actorEmail, "UPGRADE_TO_PREMIUM", "learner", email);
                 return new Outcome(email, "UPGRADED", "Batch account moved to Premium, progress kept.", l.getId());
             }
-            return new Outcome(email, "EXISTS", "Already provisioned, nothing changed.", l.getId());
+            return new Outcome(email, EXISTS, "Already provisioned, nothing changed.", l.getId());
         }
+
+        String problem = rowProblem(row);
+        if (problem != null) return new Outcome(email, ERROR, problem, null);
 
         User u = new User();
         u.setEmail(email);
@@ -138,12 +217,12 @@ public class ProvisioningService {
         l.setTrackType(row.trackType());
         l.setJoinedOn(row.joinedOn() == null ? LocalDate.now() : row.joinedOn());
         l.setSourceRow(row.sourceRow());
-        resolveBundle(row.bundleName()).ifPresent(b -> l.setBundleId(b.getId()));
+        resolveBundle(row).ifPresent(b -> l.setBundleId(b.getId()));
         if (row.trackType() == Learner.TrackType.BATCH) {
             Batch batch = null;
             if (row.batchCode() != null && !row.batchCode().isBlank()) {
-                String code = row.batchCode().trim().toUpperCase();
-                batch = batches.findByCode(code).orElseGet(() -> createBatch(code, l.getBundleId()));
+                /* checked by rowProblem above, so it exists */
+                batch = batches.findByCode(row.batchCode().trim().toUpperCase()).orElse(null);
             } else {
                 /* the Wednesday rule: a new batch starts every Tuesday, and someone who
                    joins on a Wednesday goes into the batch that has just started rather
@@ -186,6 +265,12 @@ public class ProvisioningService {
      * WhatsApp can say what the password is without looking it up anywhere.
      */
     public String resetAndDispatch(User u) {
+        /* once somebody has chosen their own password, resending the first one would
+           silently replace it. That is a reset, and it has its own button */
+        if (!u.isMustChangePassword()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "They have set their own password. Use Reset password instead.");
+        }
         if (u.getLoginId() == null || u.getLoginId().isBlank()) {
             u.setLoginId(credentials.loginIdFor(u.getFullName(), u.getEmail(), u.getId()));
         }
@@ -245,7 +330,23 @@ public class ProvisioningService {
         return open.stream()
                 .filter(b -> !b.getStartDate().isBefore(tuesday))
                 .reduce((a, b) -> a.getStartDate().isBefore(b.getStartDate()) ? a : b)
-                .orElseGet(() -> createBatch("B" + (batches.count() + 56), bundleId));
+                .orElseGet(() -> createBatch(nextFreeBatchCode(), bundleId));
+    }
+
+    /**
+     * One past the highest B-number in use. Counting batches and adding fifty six
+     * collided with any code typed by hand, and findByCode then answered with
+     * somebody else's cohort.
+     */
+    private String nextFreeBatchCode() {
+        int high = 55;
+        for (Batch b : batches.findAll()) {
+            String c = b.getCode();
+            if (c != null && c.matches("B\\d+")) high = Math.max(high, Integer.parseInt(c.substring(1)));
+        }
+        String code = "B" + (high + 1);
+        while (batches.findByCode(code).isPresent()) code = "B" + (++high + 1);
+        return code;
     }
 
     public static LocalDate nextTuesday(LocalDate from) {
@@ -256,13 +357,16 @@ public class ProvisioningService {
         return d;
     }
 
-    private Optional<Bundle> resolveBundle(String name) {
+    /** The course picked on screen by id, or the exact name (ignoring case) from a sheet. */
+    private Optional<Bundle> resolveBundle(RecordRow row) {
+        if (row.bundleId() != null && !row.bundleId().isBlank()) {
+            return bundles.findById(row.bundleId());
+        }
+        String name = row.bundleName();
         if (name == null || name.isBlank()) return Optional.empty();
-        String wanted = name.trim().toLowerCase();
+        String wanted = name.trim();
         return bundles.findAll().stream()
-                .filter(b -> b.getName().toLowerCase().equals(wanted)
-                        || b.getName().toLowerCase().contains(wanted)
-                        || wanted.contains(b.getName().toLowerCase()))
+                .filter(b -> b.getName() != null && b.getName().trim().equalsIgnoreCase(wanted))
                 .findFirst();
     }
 

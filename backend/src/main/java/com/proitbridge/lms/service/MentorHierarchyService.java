@@ -5,6 +5,7 @@ import com.proitbridge.lms.repo.UserRepository;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Who reports to whom, and therefore who a senior mentor can see.
@@ -24,47 +25,77 @@ public class MentorHierarchyService {
 
     private static final int MAX_DEPTH = 12;
 
+    /** How long a computed subtree is trusted. Staff edits also drop it at once. */
+    private static final long TTL_MS = 60_000;
+
+    private static final List<User.Role> STAFF =
+            List.of(User.Role.MENTOR, User.Role.ADMIN, User.Role.SUPER_ADMIN);
+
     private final UserRepository users;
+
+    /*
+     * Every visibility check on a mentor request asks one of these two questions, and
+     * the answer only changes when somebody edits the staff tree. A minute's cache per
+     * person keeps a lead's screen from walking the tree on every click; saveStaff,
+     * updateStaff and setStaffActive call invalidate() so an edit shows at once.
+     */
+    private record Cached<T>(T value, long at) {
+        boolean fresh() { return System.currentTimeMillis() - at < TTL_MS; }
+    }
+    private final Map<String, Cached<List<User>>> reportsCache = new ConcurrentHashMap<>();
+    private final Map<String, Cached<Set<String>>> belowCache = new ConcurrentHashMap<>();
 
     public MentorHierarchyService(UserRepository users) {
         this.users = users;
     }
 
-    /** The people who report directly to this person, active ones only. */
+    /** Drop every cached subtree. Called whenever a staff account is saved or switched. */
+    public void invalidate() {
+        reportsCache.clear();
+        belowCache.clear();
+    }
+
+    /** The people who report directly to this person, active staff only. */
     public List<User> directReports(String userId) {
-        return users.findAll().stream()
+        if (userId == null) return List.of();
+        Cached<List<User>> hit = reportsCache.get(userId);
+        if (hit != null && hit.fresh()) return hit.value();
+        /* off the reportsToId index: the people reporting to one person, not everybody */
+        List<User> out = users.findByReportsToIdInAndRoleIn(List.of(userId), STAFF).stream()
                 .filter(User::isActive)
-                .filter(u -> userId.equals(u.getReportsToId()))
                 .sorted(Comparator.comparing(User::getFullName, Comparator.nullsLast(String::compareTo)))
                 .toList();
+        reportsCache.put(userId, new Cached<>(out, System.currentTimeMillis()));
+        return out;
     }
 
     /**
      * Everyone below this person in the tree, at any depth, not including themselves.
-     * One pass over the user list builds the child index, so depth costs nothing extra.
+     *
+     * Walked level by level off the reportsToId index: one $in read per level, holding
+     * only the ids found on the level above. A mentor with nobody under them costs one
+     * empty indexed read; nothing reads the whole staff list, let alone every user.
      */
     public Set<String> everyoneBelow(String userId) {
-        Map<String, List<String>> children = new HashMap<>();
-        for (User u : users.findAll()) {
-            if (!u.isActive() || u.getReportsToId() == null) continue;
-            children.computeIfAbsent(u.getReportsToId(), k -> new ArrayList<>()).add(u.getId());
-        }
+        if (userId == null) return Set.of();
+        Cached<Set<String>> hit = belowCache.get(userId);
+        if (hit != null && hit.fresh()) return hit.value();
 
         Set<String> below = new LinkedHashSet<>();
-        Deque<String[]> queue = new ArrayDeque<>();
-        queue.add(new String[] { userId, "0" });
-
-        while (!queue.isEmpty()) {
-            String[] step = queue.removeFirst();
-            int depth = Integer.parseInt(step[1]);
-            if (depth >= MAX_DEPTH) continue;
-            for (String childId : children.getOrDefault(step[0], List.of())) {
-                if (childId.equals(userId)) continue;          // a cycle back to the top
-                if (!below.add(childId)) continue;             // already seen: a cycle
-                queue.add(new String[] { childId, String.valueOf(depth + 1) });
+        Set<String> level = Set.of(userId);
+        for (int depth = 0; depth < MAX_DEPTH && !level.isEmpty(); depth++) {
+            Set<String> next = new LinkedHashSet<>();
+            for (User u : users.findByReportsToIdInAndRoleIn(level, STAFF)) {
+                if (!u.isActive()) continue;
+                String id = u.getId();
+                if (id.equals(userId)) continue;               // a cycle back to the top
+                if (below.add(id)) next.add(id);               // already seen: a cycle
             }
+            level = next;
         }
-        return below;
+        Set<String> out = Collections.unmodifiableSet(below);
+        belowCache.put(userId, new Cached<>(out, System.currentTimeMillis()));
+        return out;
     }
 
     /** True when this person sits above that one, at any depth. */

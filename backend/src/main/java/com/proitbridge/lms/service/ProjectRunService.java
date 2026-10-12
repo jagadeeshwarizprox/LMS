@@ -29,13 +29,18 @@ public class ProjectRunService {
     private final RubricRepository rubrics;
     private final MockRequestRepository mocks;
     private final MailService mail;
+    private final MentorCoverService cover;
+    private final ProgressSnapshotService snapshots;
 
     public ProjectRunService(ProjectRepository projects, ProjectRunRepository runs,
                              LearnerRepository learners, UserRepository users,
                              RubricRepository rubrics, MockRequestRepository mocks,
-                             MailService mail) {
+                             MailService mail, MentorCoverService cover,
+                             ProgressSnapshotService snapshots) {
         this.projects = projects; this.runs = runs; this.learners = learners;
         this.users = users; this.rubrics = rubrics; this.mocks = mocks; this.mail = mail;
+        this.cover = cover;
+        this.snapshots = snapshots;
     }
 
     /** Controllers hold a user id; everything in here is keyed on the learner row. */
@@ -91,9 +96,14 @@ public class ProjectRunService {
     /** A whole cohort onto one project, which is how a batch project actually starts. */
     public Map<String, Object> enrolBatch(String batchId, String projectId) {
         List<Learner> cohort = learners.findByBatchId(batchId);
+        /* who is already on it, in one read for the cohort rather than one per learner */
+        Set<String> already = cohort.isEmpty() ? Set.of()
+                : runs.findByProjectIdAndLearnerIdIn(projectId,
+                        cohort.stream().map(Learner::getId).toList()).stream()
+                    .map(ProjectRun::getLearnerId).collect(Collectors.toSet());
         int n = 0;
         for (Learner l : cohort) {
-            if (runs.findByLearnerIdAndProjectId(l.getId(), projectId).isEmpty()) {
+            if (!already.contains(l.getId())) {
                 enrol(l.getId(), projectId);
                 n++;
             }
@@ -167,8 +177,16 @@ public class ProjectRunService {
     /** Every stage waiting on a review, oldest first, which is the order to work in. */
     public List<Map<String, Object>> reviewQueue(List<String> learnerIds) {
         List<Map<String, Object>> out = new ArrayList<>();
-        for (ProjectRun r : runs.findByLearnerIdIn(learnerIds)) {
-            Project p = projects.findById(r.getProjectId()).orElse(null);
+        if (learnerIds == null || learnerIds.isEmpty()) return out;
+        /* an APPROVED run has no stage left to review, so only open runs are read, over the
+           (learnerId, status) index; their projects and learner names are one read each */
+        List<ProjectRun> open = runs.findByLearnerIdInAndStatusNot(learnerIds, "APPROVED");
+        Map<String, Project> projectById = new HashMap<>();
+        projects.findAllById(open.stream().map(ProjectRun::getProjectId).filter(Objects::nonNull)
+                .collect(Collectors.toSet())).forEach(p -> projectById.put(p.getId(), p));
+        Map<String, String> names = learnerNames(open.stream().map(ProjectRun::getLearnerId).toList());
+        for (ProjectRun r : open) {
+            Project p = r.getProjectId() == null ? null : projectById.get(r.getProjectId());
             if (p == null) continue;
             for (Project.Stage s : p.getStages()) {
                 ProjectRun.StageState st = r.getStages().get(s.getKey());
@@ -179,7 +197,7 @@ public class ProjectRunService {
                 m.put("stageName", s.getName());
                 m.put("project", p.getTitle());
                 m.put("learnerId", r.getLearnerId());
-                m.put("learner", learnerName(r.getLearnerId()));
+                m.put("learner", names.getOrDefault(r.getLearnerId(), "Learner"));
                 m.put("submittedAt", st.getSubmittedAt());
                 m.put("version", st.getAttempts().size());
                 m.put("waitingDays", st.getSubmittedAt() == null ? 0
@@ -201,6 +219,26 @@ public class ProjectRunService {
     public Map<String, Object> review(String mentorId, String runId, String stageKey,
                                       String outcome, Double score, String feedback,
                                       Map<String, Double> rubricScores) {
+        return review(mentorId, "MENTOR", runId, stageKey, outcome, score, feedback, rubricScores);
+    }
+
+    /**
+     * The gate, with the caller's role.
+     *
+     * Three things were missing. Any mentor could review any run by id, whoever's
+     * learner it was. A stage could be "approved" before anything was handed in, which
+     * walked a learner past a gate with nothing built. And a second review overwrote the
+     * first on the attempt, so a withdrawn approval vanished. A mentor now has to be able
+     * to see the learner (the office may act on any), the stage has to be waiting on a
+     * review, and every review is appended to the attempt it judged.
+     *
+     * The one review allowed on a stage that is not waiting is sending an approved stage
+     * back. Stages after it that nothing has been handed in for are locked again, because
+     * they were only open on the strength of the approval being withdrawn.
+     */
+    public Map<String, Object> review(String mentorId, String role, String runId, String stageKey,
+                                      String outcome, Double score, String feedback,
+                                      Map<String, Double> rubricScores) {
         if (!List.of("APPROVED", "CHANGES").contains(outcome)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "The outcome is either APPROVED or CHANGES.");
@@ -212,10 +250,24 @@ public class ProjectRunService {
 
         ProjectRun r = runs.findById(runId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such project run."));
+        boolean office = "ADMIN".equals(role) || "SUPER_ADMIN".equals(role);
+        if (!office) {
+            Learner owner = learners.findById(r.getLearnerId()).orElse(null);
+            if (owner == null || !cover.canSee(mentorId, owner)) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "That learner is not assigned to you.");
+            }
+        }
         Project p = project(r.getProjectId());
         ProjectRun.StageState st = r.getStages().get(stageKey);
         if (st == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No such stage on this project.");
+        }
+        boolean wasApproved = "APPROVED".equals(st.getStatus());
+        boolean sendingBack = wasApproved && "CHANGES".equals(outcome);
+        if (!"SUBMITTED".equals(st.getStatus()) && !sendingBack) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, wasApproved
+                    ? "This stage is already approved. It can only be sent back for changes."
+                    : "Nothing has been handed in for this stage yet.");
         }
 
         st.setStatus(outcome);
@@ -225,11 +277,44 @@ public class ProjectRunService {
         st.setReviewedBy(mentorId);
         if (rubricScores != null) st.setRubricScores(rubricScores);
 
-        /* the outcome is copied onto the attempt so the history reads in one place */
+        /* the outcome is copied onto the attempt so the history reads in one place, and
+           appended to its reviews so a second look does not erase the first */
         if (!st.getAttempts().isEmpty()) {
             ProjectRun.Attempt last = st.getAttempts().get(st.getAttempts().size() - 1);
+            if (last.getOutcome() != null && last.getReviews().isEmpty()) {
+                /* an attempt reviewed before reviews were kept: keep that one too */
+                ProjectRun.Review earlier = new ProjectRun.Review();
+                earlier.setOutcome(last.getOutcome());
+                earlier.setFeedback(last.getFeedback());
+                earlier.setAt(null);
+                last.getReviews().add(earlier);
+            }
+            ProjectRun.Review rv = new ProjectRun.Review();
+            rv.setOutcome(outcome);
+            rv.setScore(score);
+            rv.setFeedback(feedback);
+            rv.setReviewedBy(mentorId);
+            last.getReviews().add(rv);
             last.setOutcome(outcome);
             last.setFeedback(feedback);
+        }
+
+        if (sendingBack) {
+            boolean after = false;
+            for (Project.Stage s : p.getStages()) {
+                if (after) {
+                    ProjectRun.StageState later = r.getStages().get(s.getKey());
+                    if (later != null && "OPEN".equals(later.getStatus())) {
+                        later.setStatus("LOCKED");
+                        later.setOpenedAt(null);
+                    }
+                }
+                if (s.getKey().equals(stageKey)) after = true;
+            }
+            if ("APPROVED".equals(r.getStatus())) {
+                r.setStatus("RUNNING");
+                r.setApprovedAt(null);
+            }
         }
 
         Learner l = learners.findById(r.getLearnerId()).orElse(null);
@@ -253,6 +338,13 @@ public class ProjectRunService {
             r.setCurrentStage(stageKey);
         }
         runs.save(r);
+        /*
+         * A stage review is a progress event, so the learner's snapshot is brought up to
+         * date with it. Nothing in the snapshot counts runs today (projectsApproved is the
+         * project submissions a mentor approves), so this is one learner's worth of reads
+         * per review, kept so that the snapshot never needs a second hook if it starts to.
+         */
+        snapshots.refresh(r.getLearnerId());
 
         if (l != null) {
             String stageName = p.getStages().stream()
@@ -278,15 +370,14 @@ public class ProjectRunService {
      */
     public Map<String, Object> batchGrid(String batchId, String projectId) {
         Project p = project(projectId);
-        List<ProjectRun> cohort = runs.findByBatchId(batchId).stream()
-                .filter(r -> r.getProjectId().equals(projectId))
-                .collect(Collectors.toList());
+        List<ProjectRun> cohort = runs.findByBatchIdAndProjectId(batchId, projectId);
+        Map<String, String> names = learnerNames(cohort.stream().map(ProjectRun::getLearnerId).toList());
 
         List<Map<String, Object>> rows = cohort.stream().map(r -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("runId", r.getId());
             m.put("learnerId", r.getLearnerId());
-            m.put("learner", learnerName(r.getLearnerId()));
+            m.put("learner", names.getOrDefault(r.getLearnerId(), "Learner"));
             m.put("status", r.getStatus());
             m.put("currentStage", r.getCurrentStage());
             m.put("stages", p.getStages().stream().map(s -> {
@@ -420,6 +511,19 @@ public class ProjectRunService {
         k.setOrigin("REQUEST");
         k.setStatus("PENDING");
         mocks.save(k);
+    }
+
+    /** Learner id to display name for many rows, in two reads whatever the count. */
+    private Map<String, String> learnerNames(Collection<String> learnerIds) {
+        Map<String, String> out = new HashMap<>();
+        Set<String> ids = learnerIds.stream().filter(Objects::nonNull).collect(Collectors.toSet());
+        if (ids.isEmpty()) return out;
+        Map<String, String> userOf = new HashMap<>();
+        learners.findAllById(ids).forEach(l -> { if (l.getUserId() != null) userOf.put(l.getId(), l.getUserId()); });
+        Map<String, String> nameOf = new HashMap<>();
+        users.findAllById(new HashSet<>(userOf.values())).forEach(u -> nameOf.put(u.getId(), u.getFullName()));
+        userOf.forEach((lid, uid) -> { if (nameOf.get(uid) != null) out.put(lid, nameOf.get(uid)); });
+        return out;
     }
 
     private String learnerName(String learnerId) {

@@ -5,5 +5,4 @@ import org.springframework.data.mongodb.repository.MongoRepository;
 import java.util.*;
 
 public interface ActivityLogRepository extends MongoRepository<ActivityLog, String> {
-    List<ActivityLog> findTop100ByOrderByCreatedAtDesc();
 }

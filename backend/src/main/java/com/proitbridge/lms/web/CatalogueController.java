@@ -52,6 +52,12 @@ public class CatalogueController {
         return catalogue.setChapterPublished(id, !Boolean.FALSE.equals(body.get("published")), actor());
     }
 
+    /** Show or hide a chapter on the roadmap without resending the chapter itself. */
+    @PostMapping("/chapters/{id}/active")
+    public Chapter setChapterActive(@PathVariable String id, @RequestBody Map<String, Object> body) {
+        return catalogue.setChapterActive(id, !Boolean.FALSE.equals(body.get("active")), actor());
+    }
+
     @DeleteMapping("/modules/{id}")
     public Map<String, Object> deleteModule(@PathVariable String id) {
         return catalogue.deleteModule(id, actor());
@@ -144,10 +150,8 @@ public class CatalogueController {
         return catalogue.setBundleModules(id, body.getOrDefault("ids", List.of()), actor());
     }
 
-    @PutMapping("/bundles/{id}/access")
-    public Bundle setBundleAccess(@PathVariable String id, @RequestBody Bundle.Access body) {
-        return catalogue.setBundleAccess(id, body, actor());
-    }
+    /* no access route: the switches it set (premium, batch, self paced, sequential,
+       certificate) were never read anywhere, so the screen no longer offers them */
 
     /** Walk every topic in a course and report what a learner would actually hit. */
     @GetMapping("/bundles/{id}/video-check")

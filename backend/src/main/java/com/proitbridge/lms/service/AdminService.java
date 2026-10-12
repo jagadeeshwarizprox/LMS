@@ -2,6 +2,10 @@ package com.proitbridge.lms.service;
 
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -36,6 +40,10 @@ public class AdminService {
     private final ActivityService activity;
     private final CredentialService credentials;
     private final PasswordEncoder encoder;
+    /* targeted reads on collections this service does not own the repository for */
+    private final MongoTemplate mongo;
+    private final ProgressSnapshotService snapshots;
+    private final LearnerProgressService progressView;
 
     private final AtomicInteger roundRobin = new AtomicInteger(0);
 
@@ -47,7 +55,10 @@ public class AdminService {
                         ProvisioningService provisioning,
                         MentorService mentorService, MailService mail, ActivityService activity,
                         CredentialService credentials, PasswordEncoder encoder,
-                        SlotRepository slots, AttendanceRepository attendance) {
+                        SlotRepository slots, AttendanceRepository attendance,
+                        MongoTemplate mongo, ProgressSnapshotService snapshots,
+                        LearnerProgressService progressView) {
+        this.mongo = mongo; this.snapshots = snapshots; this.progressView = progressView;
         this.users = users; this.learners = learners; this.batches = batches; this.bundles = bundles;
         this.assignments = assignments; this.projects = projects; this.mocks = mocks;
         this.overrides = overrides; this.announcements = announcements; this.mentorHistory = mentorHistory;
@@ -57,25 +68,32 @@ public class AdminService {
         this.slots = slots; this.attendance = attendance;
     }
 
+    /**
+     * The admin home numbers, all as counts.
+     *
+     * This loaded every learner and every assignment, project and mock request into
+     * memory to count a few of them, on the screen an admin opens first every morning.
+     * Each figure is now one count query; the ones with an index behind them (track,
+     * mentor, assignment status, role) are answered from the index alone.
+     */
     public Map<String, Object> overview() {
-        List<Learner> all = learners.findAll();
-        long premium = all.stream().filter(l -> l.getTrackType() == Learner.TrackType.PREMIUM).count();
-        long unassigned = all.stream().filter(l -> l.getMentorId() == null).count();
-        long onboarding = all.stream().filter(l -> !l.gatesCleared()).count();
+        long total = learners.count();
+        long premium = learners.countByTrackType(Learner.TrackType.PREMIUM);
+        /* is(null) matches a missing field as well as an explicit null, which is what
+           getMentorId() == null meant on the loaded row */
+        long unassigned = mongo.count(new Query(Criteria.where("mentorId").is(null)), Learner.class);
+        long onboarding = mongo.count(new Query(AdminQueries.stillOnboarding()), Learner.class);
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("learners", all.size());
+        m.put("learners", total);
         m.put("premium", premium);
-        m.put("batch", all.size() - premium);
+        m.put("batch", total - premium);
         m.put("batches", batches.count());
-        m.put("mentors", users.findByRole(User.Role.MENTOR).size());
+        m.put("mentors", users.countByRole(User.Role.MENTOR));
         m.put("unassigned", unassigned);
         m.put("onboardingOpen", onboarding);
-        m.put("tasksWaiting", assignments.findAll().stream()
-                .filter(a -> "SUBMITTED".equals(a.getStatus())).count());
-        m.put("projectsWaiting", projects.findAll().stream()
-                .filter(p -> "SUBMITTED".equals(p.getStatus())).count());
-        m.put("mocksWaiting", mocks.findAll().stream()
-                .filter(r -> "PENDING".equals(r.getStatus())).count());
+        m.put("tasksWaiting", mongo.count(new Query(Criteria.where("status").is("SUBMITTED")), Assignment.class));
+        m.put("projectsWaiting", mongo.count(new Query(Criteria.where("status").is("SUBMITTED")), ProjectWork.class));
+        m.put("mocksWaiting", mongo.count(new Query(Criteria.where("status").is("PENDING")), MockRequest.class));
         return m;
     }
 
@@ -90,18 +108,118 @@ public class AdminService {
      * for a query that looked like one person's name, which reads as the wrong rows
      * rather than as a feature.
      */
-    public List<Map<String, Object>> register(String trackType, String batchId,
-                                              String mentorId, String query) {
-        String needle = query == null || query.isBlank() ? null : query.trim().toLowerCase();
-        return learners.findAll().stream()
-                .filter(l -> trackType == null || l.getTrackType().name().equalsIgnoreCase(trackType))
-                .filter(l -> batchId == null || batchId.equals(l.getBatchId()))
-                .filter(l -> mentorId == null || mentorId.equals(l.getMentorId()))
-                .map(mentorService::learnerRow)
-                .filter(r -> needle == null
-                        || String.valueOf(r.get("name")).toLowerCase().contains(needle)
-                        || String.valueOf(r.get("email")).toLowerCase().contains(needle))
-                .collect(Collectors.toList());
+    public Map<String, Object> register(String trackType, String batchId, String mentorId,
+                                        String query, Boolean onboarded,
+                                        Integer pageParam, Integer sizeParam) {
+        int page = AdminQueries.page(pageParam);
+        int size = AdminQueries.size(sizeParam);
+
+        List<Criteria> parts = new ArrayList<>();
+        if (AdminQueries.hasText(trackType)) {
+            Learner.TrackType t;
+            try {
+                t = Learner.TrackType.valueOf(trackType.trim().toUpperCase());
+            } catch (IllegalArgumentException e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unknown track " + trackType + ".");
+            }
+            parts.add(Criteria.where("trackType").is(t));
+        }
+        if (AdminQueries.hasText(batchId)) parts.add(Criteria.where("batchId").is(batchId));
+        if (AdminQueries.hasText(mentorId)) parts.add(Criteria.where("mentorId").is(mentorId));
+        if (onboarded != null) {
+            parts.add(onboarded ? AdminQueries.onboarded() : AdminQueries.stillOnboarding());
+        }
+
+        /*
+         * Search: users first, then their learner rows.
+         *
+         * The name, email and login ID live on the user, not the learner, so the search
+         * runs as two indexed steps: a case-insensitive match over learner accounts that
+         * returns ids only, then the learner page restricted to those user ids alongside
+         * every other filter. The alternative, a lower-cased search key copied onto the
+         * learner, would be faster on paper and wrong in practice: a rename made anywhere
+         * that writes users (the learner's own profile, a staff edit, the login ID
+         * migration) would have to remember to update it, and the other side of this
+         * codebase writes users in places this side does not own. Twenty thousand short
+         * user documents is a scan Mongo finishes in milliseconds, and the 300ms debounce
+         * on the box means it runs once per pause in typing, not per key.
+         */
+        if (AdminQueries.hasText(query)) {
+            String rx = AdminQueries.literal(query);
+            Query uq = new Query(new Criteria().andOperator(
+                    Criteria.where("role").is(User.Role.LEARNER),
+                    new Criteria().orOperator(
+                            Criteria.where("fullName").regex(rx, "i"),
+                            Criteria.where("email").regex(rx, "i"),
+                            Criteria.where("loginId").regex(rx, "i"))));
+            uq.fields().include("_id");
+            List<String> userIds = mongo.find(uq, User.class).stream().map(User::getId).toList();
+            if (userIds.isEmpty()) return AdminQueries.pageOf(List.of(), 0, page, size);
+            parts.add(Criteria.where("userId").in(userIds));
+        }
+
+        Criteria where = AdminQueries.all(parts);
+        long total = mongo.count(new Query(where), Learner.class);
+        /* _id order is creation order, which is the order the unpaged list came back in */
+        Query pq = new Query(where).with(Sort.by(Sort.Direction.ASC, "_id"))
+                .skip((long) page * size).limit(size);
+        List<Learner> slice = mongo.find(pq, Learner.class);
+        return AdminQueries.pageOf(registerRows(slice), total, page, size);
+    }
+
+    /**
+     * The register row for a page of learners, with every lookup done once per page.
+     *
+     * Same keys, same values as MentorService.learnerRow, which this used to call per
+     * row: that did a user, a batch, a course and a mentor lookup each time, two hundred
+     * round trips for a page of fifty. Here the users, mentors, batches and courses for
+     * the whole page arrive in three findAllById calls. The watch and attendance figures
+     * still come from LearnerProgressService.rowStats, one learner at a time, because
+     * that is where their definition lives; for fifty rows it is bounded.
+     */
+    private List<Map<String, Object>> registerRows(List<Learner> slice) {
+        if (slice.isEmpty()) return List.of();
+        Set<String> userIds = new HashSet<>();
+        Set<String> batchIds = new HashSet<>();
+        Set<String> bundleIds = new HashSet<>();
+        for (Learner l : slice) {
+            if (l.getUserId() != null) userIds.add(l.getUserId());
+            if (l.getMentorId() != null) userIds.add(l.getMentorId());
+            if (l.getBatchId() != null) batchIds.add(l.getBatchId());
+            if (l.getBundleId() != null) bundleIds.add(l.getBundleId());
+        }
+        Map<String, User> who = new HashMap<>();
+        users.findAllById(userIds).forEach(u -> who.put(u.getId(), u));
+        Map<String, String> batchCode = new HashMap<>();
+        batches.findAllById(batchIds).forEach(b -> batchCode.put(b.getId(), b.getCode()));
+        Map<String, String> bundleName = new HashMap<>();
+        bundles.findAllById(bundleIds).forEach(b -> bundleName.put(b.getId(), b.getName()));
+
+        List<Map<String, Object>> out = new ArrayList<>(slice.size());
+        for (Learner l : slice) {
+            User u = who.get(l.getUserId());
+            User mentor = l.getMentorId() == null ? null : who.get(l.getMentorId());
+            Map<String, Object> s = snapshots.stats(l);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("learnerId", l.getId());
+            m.put("userId", l.getUserId());
+            m.put("name", u == null ? "Learner" : u.getFullName());
+            m.put("email", u == null ? null : u.getEmail());
+            m.put("loginId", u == null ? null : u.getLoginId());
+            m.put("trackType", l.getTrackType());
+            m.put("batch", l.getBatchId() == null ? null : batchCode.get(l.getBatchId()));
+            m.put("bundle", l.getBundleId() == null ? null : bundleName.get(l.getBundleId()));
+            m.put("percent", s.get("percent"));
+            m.put("lastLoginAt", u == null ? null : u.getLastLoginAt());
+            m.put("onboarded", l.gatesCleared());
+            m.put("suspended", u != null && u.isSuspended());
+            m.put("active", u == null || u.isActive());
+            m.put("mentorId", l.getMentorId());
+            m.put("mentor", mentor == null ? null : mentor.getFullName());
+            m.putAll(progressView.rowStats(l));
+            out.add(m);
+        }
+        return out;
     }
 
     /**
@@ -113,8 +231,9 @@ public class AdminService {
      * data cut down to what assignment needs, and open to admins.
      */
     public List<Map<String, Object>> mentors() {
-        return users.findAll().stream()
-                .filter(u -> u.getRole() == User.Role.MENTOR)
+        /* mentors by role off the index, and a count per mentor off the learner mentorId
+           index; the old version read every user and every caseload in full */
+        return users.findByRole(User.Role.MENTOR).stream()
                 .map(u -> {
                     Map<String, Object> m = new LinkedHashMap<>();
                     m.put("id", u.getId());
@@ -122,7 +241,8 @@ public class AdminService {
                     m.put("email", u.getEmail());
                     m.put("role", u.getRole());
                     m.put("active", u.isActive());
-                    m.put("learners", learners.findByMentorId(u.getId()).size());
+                    m.put("learners", mongo.count(
+                            new Query(Criteria.where("mentorId").is(u.getId())), Learner.class));
                     return m;
                 })
                 .collect(Collectors.toList());
@@ -145,8 +265,15 @@ public class AdminService {
      */
     public Map<String, Object> enrolOne(Map<String, String> body, String actorEmail) {
         String bundleName = body.get("bundleName");
-        if (body.get("bundleId") != null && !body.get("bundleId").isBlank()) {
-            bundleName = bundles.findById(body.get("bundleId")).map(Bundle::getName).orElse(bundleName);
+        String bundleId = body.get("bundleId");
+        if (bundleId != null && !bundleId.isBlank()) {
+            /* the id picked on screen is what provisioning uses; the name is only for the
+               message. Matching on the name again could land on a similarly named course */
+            Bundle chosen = bundles.findById(bundleId).orElseThrow(() ->
+                    new ResponseStatusException(HttpStatus.BAD_REQUEST, "That course no longer exists."));
+            bundleName = chosen.getName();
+        } else {
+            bundleId = null;
         }
         /* a learner with no course has an empty roadmap and every video answers that it
            is not part of their course, which nobody ever connects back to a blank
@@ -195,8 +322,15 @@ public class AdminService {
 
         var row = new ProvisioningService.RecordRow(
                 body.get("fullName"), body.get("email"), phone, whatsapp,
-                bundleName, track, batchCode, joined, "manual");
+                bundleName, track, batchCode, joined, ProvisioningService.MANUAL_SOURCE, bundleId);
         var outcome = provisioning.provision(row, true, actorEmail);
+        /* a row the provisioning rules refused came back as a 200 with status ERROR, so the
+           form cleared itself and showed the refusal as an ordinary note. Somebody typed
+           this in by hand; they get the reason as an error and keep what they typed */
+        if (ProvisioningService.ERROR.equals(outcome.status())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    outcome.detail() == null ? "This learner could not be enrolled." : outcome.detail());
+        }
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("status", outcome.status());
@@ -206,8 +340,16 @@ public class AdminService {
 
         if (outcome.learnerId() != null) {
             String mentorId = body.get("mentorId");
+            /* only for an account made or upgraded just now. An email that was already
+               here and left alone keeps the mentor it has; moving them is a deliberate
+               act with a reason. An upgrade to premium is exactly when a learner needs a
+               mentor of their own, and the one picked on the form was being dropped */
             if (mentorId != null && !mentorId.isBlank()) {
-                assignMentor(outcome.learnerId(), mentorId, "Chosen at enrolment", actorEmail);
+                if ("CREATED".equals(outcome.status())) {
+                    assignMentor(outcome.learnerId(), mentorId, "Chosen at enrolment", actorEmail);
+                } else if ("UPGRADED".equals(outcome.status())) {
+                    assignMentor(outcome.learnerId(), mentorId, "Upgraded to premium at enrolment", actorEmail);
+                }
             }
             learners.findById(outcome.learnerId())
                     .flatMap(l -> users.findById(l.getUserId()))
@@ -275,6 +417,15 @@ public class AdminService {
                     "Changing a mentor needs a reason. It stays on the learner's record.");
         }
 
+        if (mentorId != null && !mentorId.isBlank()) {
+            User target = users.findById(mentorId).orElseThrow(() ->
+                    new ResponseStatusException(HttpStatus.BAD_REQUEST, "No such mentor."));
+            if (target.getRole() != User.Role.MENTOR || !target.isActive()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Pick an active mentor. " + target.getFullName() + " cannot take learners.");
+            }
+        }
+
         String chosen = mentorId;
         if (chosen == null || chosen.isBlank()) {
             /*
@@ -314,23 +465,37 @@ public class AdminService {
 
     /** Only ever fills empty seats. An import or an upgrade can never move anyone. */
     public int assignAllUnassigned(String actorEmail) {
+        /*
+         * Only the empty seats, by query, and only their ids. Walking every learner to
+         * find the few without a mentor loaded the whole register to do a little work.
+         * Ids first, then one assignment at a time: assignMentor reloads and saves each
+         * row, so nothing here holds more than the id list.
+         */
+        Query q = new Query(Criteria.where("mentorId").is(null))
+                .with(Sort.by(Sort.Direction.ASC, "_id"));
+        q.fields().include("_id");
         int n = 0;
-        for (Learner l : learners.findAll()) {
-            if (l.getMentorId() == null) {
-                assignMentor(l.getId(), null, null, actorEmail);
-                n++;
-            }
+        for (Learner l : mongo.find(q, Learner.class)) {
+            assignMentor(l.getId(), null, null, actorEmail);
+            n++;
         }
         return n;
     }
 
     public List<Map<String, Object>> mentorHistory(String learnerId) {
-        return mentorHistory.findByLearnerIdOrderByAtDesc(learnerId).stream().map(h -> {
+        List<MentorAssignment> rows = mentorHistory.findByLearnerIdOrderByAtDesc(learnerId);
+        Set<String> ids = new HashSet<>();
+        rows.forEach(h -> {
+            if (h.getFromMentorId() != null) ids.add(h.getFromMentorId());
+            if (h.getToMentorId() != null) ids.add(h.getToMentorId());
+        });
+        Map<String, String> name = new HashMap<>();
+        users.findAllById(ids).forEach(u -> name.put(u.getId(), u.getFullName()));
+        return rows.stream().map(h -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("at", h.getAt());
-            m.put("from", h.getFromMentorId() == null ? null
-                    : users.findById(h.getFromMentorId()).map(User::getFullName).orElse(null));
-            m.put("to", users.findById(h.getToMentorId()).map(User::getFullName).orElse(null));
+            m.put("from", h.getFromMentorId() == null ? null : name.get(h.getFromMentorId()));
+            m.put("to", h.getToMentorId() == null ? null : name.get(h.getToMentorId()));
             m.put("reason", h.getReason());
             m.put("by", h.getActorEmail());
             return m;
@@ -490,9 +655,9 @@ public class AdminService {
          * an assertion that it ran, not that everybody was in it, and overwriting a
          * recorded absence would throw away the better evidence.
          */
-        Set<String> absent = slots.findAll().stream()
-                .filter(sl -> "INDUCTION".equals(sl.getKind()))
-                .filter(sl -> batchId.equals(sl.getBatchId()))
+        /* this batch's induction slots by query, not every slot ever booked */
+        Set<String> absent = mongo.find(new Query(Criteria.where("kind").is("INDUCTION")
+                        .and("batchId").is(batchId)), Slot.class).stream()
                 .flatMap(sl -> attendance.findBySlotId(sl.getId()).stream())
                 .filter(a -> "ABSENT".equals(a.getState()))
                 .map(Attendance::getLearnerId)
@@ -509,7 +674,15 @@ public class AdminService {
     }
 
     public List<Map<String, Object>> batchList() {
-        return batches.findAllByOrderByStartDateDesc().stream().map(b -> {
+        /* bounded by the number of batches; names for the whole list arrive in two reads */
+        List<Batch> all = batches.findAllByOrderByStartDateDesc();
+        Map<String, String> bundleName = new HashMap<>();
+        bundles.findAllById(all.stream().map(Batch::getBundleId).filter(Objects::nonNull)
+                .collect(Collectors.toSet())).forEach(x -> bundleName.put(x.getId(), x.getName()));
+        Map<String, String> mentorName = new HashMap<>();
+        users.findAllById(all.stream().map(Batch::getMentorId).filter(Objects::nonNull)
+                .collect(Collectors.toSet())).forEach(x -> mentorName.put(x.getId(), x.getFullName()));
+        return all.stream().map(b -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", b.getId());
             m.put("code", b.getCode());
@@ -519,12 +692,10 @@ public class AdminService {
             m.put("inductionDone", b.isInductionDone());
             m.put("whatsappLink", b.getWhatsappLink());
             m.put("size", learners.countByBatchId(b.getId()));
-            m.put("bundle", b.getBundleId() == null ? null
-                    : bundles.findById(b.getBundleId()).map(Bundle::getName).orElse(null));
+            m.put("bundle", b.getBundleId() == null ? null : bundleName.get(b.getBundleId()));
             m.put("open", b.isOpen());
             m.put("mentorId", b.getMentorId());
-            m.put("mentor", b.getMentorId() == null ? null
-                    : users.findById(b.getMentorId()).map(User::getFullName).orElse(null));
+            m.put("mentor", b.getMentorId() == null ? null : mentorName.get(b.getMentorId()));
             /*
              * Moving one learner to a different mentor is a deliberate act and must not
              * silently rewrite the whole cohort, so the batch keeps its own mentor. What
@@ -532,11 +703,9 @@ public class AdminService {
              * batch mentor and looked simply out of date. The count says how many learners
              * in this batch now answer to somebody else, so the row is honest either way.
              */
-            m.put("movedOut", b.getMentorId() == null ? 0
-                    : learners.findByBatchId(b.getId()).stream()
-                        .filter(l -> l.getMentorId() != null
-                                && !l.getMentorId().equals(b.getMentorId()))
-                        .count());
+            m.put("movedOut", b.getMentorId() == null ? 0L
+                    : mongo.count(new Query(Criteria.where("batchId").is(b.getId())
+                            .and("mentorId").ne(null).nin(b.getMentorId())), Learner.class));
             return m;
         }).collect(Collectors.toList());
     }
@@ -563,7 +732,9 @@ public class AdminService {
         return announcements.save(a);
     }
 
-    public List<MailLog> mailLog() {
-        return mail.recent();
+    /** The mail log, a page at a time, optionally narrowed to one recipient or kind. */
+    public Map<String, Object> mailLog(String to, String kind, String status,
+                                       Integer page, Integer size) {
+        return mail.page(to, kind, status, AdminQueries.page(page), AdminQueries.size(size));
     }
 }

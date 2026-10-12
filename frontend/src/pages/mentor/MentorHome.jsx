@@ -9,6 +9,47 @@ import Icon from '../../components/Icon'
 import { Bars, Trend } from '../../components/Charts'
 import { Card, Empty, Page, Stat, Tag, fmtDate, fmtDateTime } from '../../components/Ui'
 
+/*
+ * The inline review form.
+ *
+ * It was declared inside MentorHome's render, so every keystroke made a new component
+ * type, React unmounted the old one and the feedback box lost focus after one letter.
+ * Out here it is one component for the life of the page.
+ */
+function ReviewBox({ kind, id, form, setForm, onSend, busy }) {
+  return (
+    <div className="mt-2 p-3" style={{ background: 'var(--blue-050)', borderRadius: 'var(--radius)' }}>
+      <div className="row g-2 align-items-end">
+        <div className="col-md-3">
+          <label className="form-label">Decision</label>
+          <select className="form-select" value={form.status}
+            onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}>
+            <option value="APPROVED">Approve</option>
+            <option value="CHANGES">Ask for changes</option>
+          </select>
+        </div>
+        {kind === 'task' && (
+          <div className="col-md-2">
+            <label className="form-label">Score</label>
+            <input className="form-control" type="number" min="0" max="100" value={form.score}
+              onChange={(e) => setForm((f) => ({ ...f, score: e.target.value }))} />
+          </div>
+        )}
+        <div className="col-md-5">
+          <label className="form-label">Feedback</label>
+          <input className="form-control" value={form.feedback}
+            onChange={(e) => setForm((f) => ({ ...f, feedback: e.target.value }))} />
+        </div>
+        <div className="col-md-2 d-flex gap-2">
+          <button className="btn btn-pib w-100" onClick={() => onSend(kind, id)} disabled={busy}>
+            {busy ? 'Sending\u2026' : 'Send'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function MentorHome() {
   const navigate = useNavigate()
   const toast = useToast()
@@ -16,6 +57,7 @@ export default function MentorHome() {
   const [data, setData] = useState(null)
   const [open, setOpen] = useState(null)
   const [form, setForm] = useState({ status: 'APPROVED', score: '', feedback: '' })
+  const [sending, setSending] = useState(false)
 
   const [day, setDay] = useState(null)
   const [doubts, setDoubts] = useState([])
@@ -30,6 +72,8 @@ export default function MentorHome() {
   if (!data?.counts) return <RoadmapSkeleton />
 
   const review = async (kind, id) => {
+    if (sending) return
+    setSending(true)
     try {
       const path = kind === 'task' ? `/mentor/assignments/${id}/review` : `/mentor/projects/${id}/review`
       await api.post(path, {
@@ -42,6 +86,7 @@ export default function MentorHome() {
       setForm({ status: 'APPROVED', score: '', feedback: '' })
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
+    finally { setSending(false) }
   }
 
   const schedule = async (id) => {
@@ -95,36 +140,6 @@ export default function MentorHome() {
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
   }
-
-  const ReviewBox = ({ kind, id }) => (
-    <div className="mt-2 p-3" style={{ background: 'var(--blue-050)', borderRadius: 'var(--radius)' }}>
-      <div className="row g-2 align-items-end">
-        <div className="col-md-3">
-          <label className="form-label">Decision</label>
-          <select className="form-select" value={form.status}
-            onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}>
-            <option value="APPROVED">Approve</option>
-            <option value="CHANGES">Ask for changes</option>
-          </select>
-        </div>
-        {kind === 'task' && (
-          <div className="col-md-2">
-            <label className="form-label">Score</label>
-            <input className="form-control" type="number" min="0" max="100" value={form.score}
-              onChange={(e) => setForm((f) => ({ ...f, score: e.target.value }))} />
-          </div>
-        )}
-        <div className="col-md-5">
-          <label className="form-label">Feedback</label>
-          <input className="form-control" value={form.feedback}
-            onChange={(e) => setForm((f) => ({ ...f, feedback: e.target.value }))} />
-        </div>
-        <div className="col-md-2 d-flex gap-2">
-          <button className="btn btn-pib w-100" onClick={() => review(kind, id)}>Send</button>
-        </div>
-      </div>
-    </div>
-  )
 
   const KIND = {
     ONBOARDING: 'Onboarding call', INDUCTION: 'Induction',
@@ -267,7 +282,8 @@ export default function MentorHome() {
                     </td>
                   </tr>
                   {open === t.id && (
-                    <tr><td colSpan={5}><ReviewBox kind="task" id={t.id} /></td></tr>
+                    <tr><td colSpan={5}><ReviewBox kind="task" id={t.id} form={form} setForm={setForm}
+                      onSend={review} busy={sending} /></td></tr>
                   )}
                 </Fragment>
               ))}
@@ -298,7 +314,8 @@ export default function MentorHome() {
                     </td>
                   </tr>
                   {open === p.id && (
-                    <tr><td colSpan={5}><ReviewBox kind="project" id={p.id} /></td></tr>
+                    <tr><td colSpan={5}><ReviewBox kind="project" id={p.id} form={form} setForm={setForm}
+                      onSend={review} busy={sending} /></td></tr>
                   )}
                 </Fragment>
               ))}

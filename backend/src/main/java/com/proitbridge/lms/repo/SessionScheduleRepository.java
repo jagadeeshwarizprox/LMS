@@ -7,4 +7,6 @@ import java.util.*;
 public interface SessionScheduleRepository extends MongoRepository<SessionSchedule, String> {
     List<SessionSchedule> findByActiveTrue();
     List<SessionSchedule> findByMentorId(String mentorId);
+    /* a schedule only ever points at a standing room, never at a per-session one */
+    boolean existsByRoomId(String roomId);
 }

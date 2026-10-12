@@ -2,8 +2,17 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import java.time.Instant;
 import java.util.*;
+/* the week board and the mentor desk read sessions by date window, with or without a mentor */
+@CompoundIndexes({
+    @CompoundIndex(name = "mentor_starts", def = "{'mentorId': 1, 'startsAt': 1}"),
+    @CompoundIndex(name = "starts", def = "{'startsAt': 1}"),
+    @CompoundIndex(name = "batch_starts", def = "{'batchId': 1, 'startsAt': 1}"),
+    @CompoundIndex(name = "schedule_key", def = "{'scheduleId': 1, 'generatedKey': 1}")
+})
 @Document("slots")
 public class Slot {
     @Id private String id;
@@ -27,6 +36,12 @@ public class Slot {
     private boolean cancelled;
     private String cancelReason;
     private String scheduleId;            // when generated from a recurring schedule
+    /*
+     * scheduleId@originalStartsAt, written once at generation and never changed. The
+     * generator used to recognise its own slots by their current start time, so moving
+     * one made the original time look empty and it was generated again.
+     */
+    private String generatedKey;
     private String notes;                 // what was covered, visible to attendees
     /* set from the schedule's rotation, so an occurrence knows who is taking it */
     private boolean openToAllBatches;
@@ -60,6 +75,8 @@ public class Slot {
     public void setCancelReason(String cancelReason) { this.cancelReason = cancelReason; }
     public String getScheduleId() { return scheduleId; }
     public void setScheduleId(String scheduleId) { this.scheduleId = scheduleId; }
+    public String getGeneratedKey() { return generatedKey; }
+    public void setGeneratedKey(String generatedKey) { this.generatedKey = generatedKey; }
     public String getNotes() { return notes; }
     public void setNotes(String notes) { this.notes = notes; }
     public boolean isOpenToAllBatches() { return openToAllBatches; }

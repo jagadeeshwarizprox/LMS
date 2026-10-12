@@ -36,7 +36,7 @@ export default function Courses() {
     .catch((e) => setLoadError(e.message))
   useEffect(() => { load() }, [])
   if (loadError) {
-    return <Page title="Courses and pricing"><LoadError error={loadError} onRetry={load} /></Page>
+    return <Page title="Courses"><LoadError error={loadError} onRetry={load} /></Page>
   }
   if (!tree) return <TableSkeleton />
 
@@ -121,16 +121,18 @@ export default function Courses() {
     })
     if (!ok) return
     try {
-      await api.del(`/super/catalogue/bundles/${b.id}`)
-      toast.push(`${b.name} deleted.`)
+      /* the server archives a course with learners on it rather than deleting it, and
+         says which it did; the toast repeats that instead of always claiming a delete */
+      const r = await api.del(`/super/catalogue/bundles/${b.id}`)
+      toast.push(r?.reason || (r?.archived ? `${b.name} archived.` : `${b.name} deleted.`))
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
   }
 
   return (
     <Page
-      title="Courses and pricing"
-      lede="A course is a bundle of modules. Price and access sit here, never on a module."
+      title="Courses"
+      lede="A course is a bundle of modules. Learners see the course they are enrolled on."
       actions={<button className="btn btn-pib" onClick={add}>Add a course</button>}
     >
       {naming && (
@@ -192,9 +194,11 @@ export default function Courses() {
                     </div>
                   </div>
                   <div className="acts">
-                    {b.published
-                      ? <Tag kind="ok">Live</Tag>
-                      : <Tag kind="wait" title="Learners cannot see a draft course">Draft</Tag>}
+                    {b.active === false
+                      ? <Tag kind="stop" title="Archived because learners are on it. Hidden from new enrolments.">Archived</Tag>
+                      : b.published
+                        ? <Tag kind="ok">Live</Tag>
+                        : <Tag kind="wait" title="Learners cannot see a draft course">Draft</Tag>}
                   </div>
                 </div>
 
@@ -204,14 +208,8 @@ export default function Courses() {
                 </div>
 
                 <div className="row" style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                  <div>
-                    <div className="eyebrow">Open to</div>
-                    <div className="chips">
-                      {b.access?.premium && <span className="tag tag-premium">Premium</span>}
-                      {b.access?.batch && <span className="tag tag-batch">Batch</span>}
-                      {!b.access?.premium && !b.access?.batch && <span className="tiny muted">Nobody yet</span>}
-                    </div>
-                  </div>
+                  {/* "Open to Premium / Batch" was shown here from access settings that
+                      nothing enforces; a course is open to whoever is enrolled on it */}
                   <div style={{ marginLeft: 'auto', alignSelf: 'flex-end', display: 'flex', gap: 8 }}>
                     {b.readiness.length > 0 && (
                       <span className="tag tag-wait">{b.readiness.length} to finish</span>

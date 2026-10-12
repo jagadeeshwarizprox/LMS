@@ -97,7 +97,9 @@ export default function Analytics() {
       title="Analytics"
       lede={mine
         ? 'Your learners, side by side. Sort a column to find who needs the next call.'
-        : 'Every learner side by side, and the same rows summed by batch, mentor and course.'}
+        : data?.learnersShown === 'AT_RISK'
+          ? 'Totals cover every learner. The table lists the at-risk learners furthest behind; search anyone in All learners.'
+          : 'Every learner side by side, and the same rows summed by batch, mentor and course.'}
     >
       <Grid cols={4}>
         <Stat value={t.learners} label={mine ? 'your learners' : 'learners'} icon="people" />
@@ -135,7 +137,9 @@ export default function Analytics() {
       )}
 
       <Card
-        title="Every learner"
+        title={data?.learnersShown === 'AT_RISK'
+          ? `At-risk learners, furthest behind first (${(data.learners || []).length} shown, of ${data.learnersTotal ?? 0} learners in all)`
+          : 'Every learner'}
         className="mt-4"
         note="A blank cell means that number does not apply yet, not zero"
         actions={

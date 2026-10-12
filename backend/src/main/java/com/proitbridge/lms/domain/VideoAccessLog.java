@@ -2,10 +2,25 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import java.time.Instant;
 import java.util.*;
 
 /** Every playback token minted, so a leak can be traced to an account and a moment. */
+/*
+ * Indexes for twenty thousand learners and their logs.
+ *
+ * The playback log is the fastest growing collection here: one row per grant. The
+ * anomaly sweep reads one day of it by time window and then per user, and the admin
+ * screen pages it newest first.
+ */
+@CompoundIndexes({
+    @CompoundIndex(name = "user_issued", def = "{'userId': 1, 'issuedAt': -1}"),
+    @CompoundIndex(name = "issued", def = "{'issuedAt': -1}"),
+    /* one video's grants, newest first (findByVideoId, the library's per-video view) */
+    @CompoundIndex(name = "video_issued", def = "{'videoId': 1, 'issuedAt': -1}")
+})
 @Document("video_access_log")
 public class VideoAccessLog {
     @Id private String id;

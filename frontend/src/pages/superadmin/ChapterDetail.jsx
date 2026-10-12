@@ -204,10 +204,16 @@ export default function ChapterDetail() {
       confirmLabel: existing ? 'Save the question' : 'Add question'
     })
     if (!r) return
-    const options = [r.a, r.b, r.c, r.d].filter((x) => x && x.trim())
-    const correctIndex = letters.indexOf(r.correct)
-    if (correctIndex < 0) { toast.push('Mark which option is correct.', 'bad'); return }
-    if (correctIndex >= options.length) { toast.push('That option is empty.', 'bad'); return }
+    /* blank options are dropped, so the correct one is found by what it says rather
+       than by its letter: with C left blank, "D" used to point at whatever slid into
+       the third place, and a blank C marked correct made D the answer */
+    const raw = [r.a, r.b, r.c, r.d]
+    const picked = letters.indexOf(r.correct)
+    if (picked < 0) { toast.push('Mark which option is correct.', 'bad'); return }
+    if (!raw[picked] || !raw[picked].trim()) { toast.push('That option is empty.', 'bad'); return }
+    const kept = raw.map((x, i) => ({ x, i })).filter(({ x }) => x && x.trim())
+    const options = kept.map(({ x }) => x)
+    const correctIndex = kept.findIndex(({ i }) => i === picked)
     run(() => api.post('/super/catalogue/questions', {
       id: existing?.id || null,
       chapterId: id,
@@ -379,7 +385,7 @@ export default function ChapterDetail() {
             <div>
               <b>Test</b>
               <span>{c.test.enabled
-                ? (questions.length ? `${questions.length} questions` : 'Switched on, nothing written')
+                ? (published ? `${published} questions${questions.length > published ? `, ${questions.length - published} drafts` : ''}` : 'Switched on, nothing reviewed yet')
                 : 'Off for this chapter'}</span>
             </div>
             <span className="go">{questions.length ? 'Edit' : 'Build'}</span>
@@ -389,9 +395,7 @@ export default function ChapterDetail() {
             <div className="ico k2">TB</div>
             <div>
               <b>Teach back</b>
-              <span>{c.teachback.enabled
-                ? (c.teachback.modelValidates ? 'Checked by the model' : 'Checked against a rubric')
-                : 'Off for this chapter'}</span>
+              <span>{c.teachback.enabled ? 'On for this chapter' : 'Off for this chapter'}</span>
             </div>
             <span className="go">{c.teachback.enabled ? 'Edit' : 'Turn on'}</span>
           </a>
@@ -409,7 +413,7 @@ export default function ChapterDetail() {
           <div style={{ display: 'grid', gap: 9 }}>
             <Switch
               checked={c.test.enabled}
-              label="Test must be passed to move on"
+              label="Chapter has a test"
               onChange={(v) => saveTest({ enabled: v })}
             />
             <Switch
@@ -421,7 +425,7 @@ export default function ChapterDetail() {
               checked={c.active}
               label="Show this chapter in the roadmap"
               onChange={(v) => run(
-                () => api.post('/super/catalogue/chapters', { ...c, topics: undefined, active: v }),
+                () => api.post(`/super/catalogue/chapters/${id}/active`, { active: v }),
                 v ? 'Shown.' : 'Hidden.')}
             />
           </div>
@@ -496,17 +500,16 @@ export default function ChapterDetail() {
               <select className="form-select" value={asg.rubricId || ''}
                 onChange={(e) => saveAssignment({ rubricId: e.target.value || null })}>
                 <option value="">No rubric, a single score</option>
-                {rubrics.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                {/* a rubric switched off is not offered; the one already chosen still shows */}
+                {rubrics.filter((r) => r.active !== false || r.id === asg.rubricId)
+                  .map((r) => <option key={r.id} value={r.id}>{r.name}{r.active === false ? ' (off)' : ''}</option>)}
               </select>
             </label>
           </div>
           <div className="col-lg-6">
             <div style={{ display: 'grid', gap: 10, marginBottom: 14 }}>
-              <Switch
-                checked={asg.review}
-                label="Mentor review required"
-                onChange={(v) => saveAssignment({ review: v })}
-              />
+              {/* "Mentor review required" is gone: every submission goes to the mentor
+                  regardless, so the switch changed nothing */}
               <Switch
                 checked={asg.resubmit}
                 label="Allow resubmission"
@@ -658,18 +661,8 @@ export default function ChapterDetail() {
                 onBlur={(e) => e.target.value !== c.teachback.prompt
                   && saveTeachback({ prompt: e.target.value })} />
             </label>
-            <div style={{ display: 'grid', gap: 10 }}>
-              <Switch
-                checked={c.teachback.modelValidates}
-                label="The model marks the explanation"
-                onChange={(v) => saveTeachback({ modelValidates: v })}
-              />
-              <Switch
-                checked={c.teachback.mentorSees}
-                label="The mentor sees the score"
-                onChange={(v) => saveTeachback({ mentorSees: v })}
-              />
-            </div>
+            {/* the two switches that sat here (model marks it, mentor sees the score)
+                were saved and never read, so they are not offered */}
             <div className="tiny muted" style={{ marginTop: 10 }}>
               Scored on understanding, not wording. It falls back to a rubric when the model
               is unreachable, and the score appears on the learner record.
@@ -724,7 +717,9 @@ function TopicForm({ topic, onSaved }) {
         id: topic.id || null,
         chapterId: topic.chapterId,
         ...form,
-        durationMin: 0
+        /* no minutes field on the form, so whatever is stored is sent back rather than a
+           zero that wiped a duration set by a pasted outline */
+        durationMin: topic.durationMin ?? 0
       })
       toast.push('Topic saved.')
       onSaved()

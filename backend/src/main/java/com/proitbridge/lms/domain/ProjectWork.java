@@ -2,10 +2,16 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import java.time.Instant;
 import java.util.*;
 
 /** Course project. For batch learners one approved project unlocks the mock interview. */
+/* a learner's projects, and counted by status; the prefix serves findByLearnerId(In) */
+@CompoundIndexes({
+    @CompoundIndex(name = "learner_status", def = "{'learnerId': 1, 'status': 1}")
+})
 @Document("projects")
 public class ProjectWork {
     @Id private String id;

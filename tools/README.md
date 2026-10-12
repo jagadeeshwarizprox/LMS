@@ -24,6 +24,7 @@ Maven Central, so `mvn` could never run. They are not a substitute for a compile
 | `check-java-imports.py` | A type used but never imported, which will not compile, and imports nothing uses. Pass `--all` to list the second kind |
 | `check-constructors.py` | A final field never assigned, or a parameter accepted and dropped. What a careless constructor edit leaves behind |
 | `check-roles.py` | A page calling an endpoint that refuses a role the page is open to. Reads the route guards in `App.jsx` and the rules in `SecurityConfig`, method-specific rules included. Calls a page only makes for some roles are listed with their gate, and the gate is checked to still be there |
+| `check-scans.py` | A `findAll()` (or unfiltered `findAllByOrderBy...`) in a service or controller on a collection that grows with learners. Small hand-entered catalogue collections are on an allow-list in the script; `*Migration`, `*Backfill` and `*Seeder` classes are skipped because they run once at startup |
 | `check-routes.py` | Two handlers mapped to one path, which makes Spring refuse to start |
 | `check-icons.py` | An icon name that is not in the map, which renders a blank button and never warns |
 | `check-a11y.py` | An icon-only button with no accessible name, and images with no alt |
@@ -37,6 +38,7 @@ javac tools/ParseCheck.java -d /tmp/pc && java -cp /tmp/pc ParseCheck backend/sr
 python3 tools/check-derived-queries.py
 python3 tools/check-accessors.py
 python3 tools/check-service-calls.py
+python3 tools/check-scans.py
 ```
 
 Each one prints its findings and a count. All four report zero as of this build.

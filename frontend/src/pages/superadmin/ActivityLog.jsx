@@ -1,31 +1,50 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
 import { TableSkeleton } from '../../components/Skeletons'
 import Avatar from '../../components/Avatar'
-import { Card, Empty, Page } from '../../components/Ui'
+import Pager, { useDebounced, usePagedList } from '../../components/Pager'
+import { Card, Empty, LoadError, Page } from '../../components/Ui'
 
 const WINDOWS = [['7', 'Last 7 days'], ['30', 'Last 30 days'], ['0', 'Everything']]
 
-/** Who changed what, across the whole console. */
+/* yyyy-MM-dd for the day `days` ago, in local time, which is what the server reads */
+function dayAgo(days) {
+  const d = new Date(Date.now() - days * 86400000)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+/**
+ * Who changed what, across the whole console.
+ *
+ * Filtered and paged on the server. This used to load the latest hundred entries and
+ * filter those, so "everything" meant the last afternoon and a person who had not acted
+ * recently was not even in the dropdown. The person box is now the start of their
+ * email, typed, and the areas come from the whole log.
+ */
 export default function ActivityLog() {
-  const [rows, setRows] = useState(null)
   const [who, setWho] = useState('')
   const [area, setArea] = useState('')
   const [days, setDays] = useState('7')
+  const [areas, setAreas] = useState([])
 
-  useEffect(() => { api.get('/super/activity').then(setRows) }, [])
+  useEffect(() => {
+    api.get('/super/activity/areas').then((a) => setAreas((a || []).filter(Boolean).sort()))
+      .catch(() => setAreas([]))
+  }, [])
 
-  const people = useMemo(
-    () => [...new Set((rows || []).map((a) => a.actorEmail).filter(Boolean))], [rows])
-  const areas = useMemo(
-    () => [...new Set((rows || []).map((a) => a.entity).filter(Boolean))], [rows])
+  const actor = useDebounced(who.trim(), 300)
+  const list = usePagedList((qs) => api.get(`/super/activity?${qs}`), {
+    actor, area, from: days === '0' ? '' : dayAgo(Number(days))
+  })
+  const rows = list.data ? list.rows : null
+  const loadError = list.error
+  const load = list.reload
 
+  if (loadError && !rows) return <Page title="Activity log"><LoadError error={loadError} onRetry={load} /></Page>
   if (!rows) return <TableSkeleton />
 
-  const cutoff = days === '0' ? 0 : Date.now() - Number(days) * 86400000
-  const shown = rows.filter((a) => (!who || a.actorEmail === who)
-    && (!area || a.entity === area)
-    && (!cutoff || new Date(a.createdAt).getTime() >= cutoff))
+  const shown = rows
 
   return (
     <Page
@@ -35,11 +54,9 @@ export default function ActivityLog() {
       <Card>
         <div className="row" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
           <div className="field" style={{ flex: '1 1 180px' }}>
-            <label className="form-label">Person</label>
-            <select className="form-select" value={who} onChange={(e) => setWho(e.target.value)}>
-              <option value="">Everyone</option>
-              {people.map((p) => <option key={p} value={p}>{p}</option>)}
-            </select>
+            <label className="form-label" htmlFor="act-who">Person</label>
+            <input id="act-who" className="form-control" value={who}
+              placeholder="Email starts with" onChange={(e) => setWho(e.target.value)} />
           </div>
           <div className="field" style={{ flex: '1 1 180px' }}>
             <label className="form-label">Area</label>
@@ -74,6 +91,8 @@ export default function ActivityLog() {
             </div>
           )
         })}
+        <Pager page={list.page} size={list.size} total={list.total}
+          onPage={list.setPage} loading={list.loading} noun="entries" />
       </Card>
     </Page>
   )

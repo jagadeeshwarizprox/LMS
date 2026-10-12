@@ -2,6 +2,8 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import java.time.Instant;
 import java.util.*;
 
@@ -13,6 +15,13 @@ import java.util.*;
  * once per chapter. {@code watched} is kept as a flag rather than recomputed on every
  * read: it is set the moment the last topic in the chapter is finished.
  */
+/* every learner screen reads a learner's rows, and chapter pages read one row */
+@CompoundIndexes({
+    @CompoundIndex(name = "learner_chapter", def = "{'learnerId': 1, 'chapterId': 1}"),
+    /* "has anyone studied this chapter / module": the catalogue's delete guards and counts */
+    @CompoundIndex(name = "chapter", def = "{'chapterId': 1}"),
+    @CompoundIndex(name = "module", def = "{'moduleId': 1}")
+})
 @Document("progress")
 public class Progress {
     @Id private String id;

@@ -2,6 +2,8 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
 import java.time.Instant;
 import java.util.*;
@@ -11,6 +13,13 @@ import java.util.*;
  * so signing in anywhere drops the previous sign in: two people cannot share one
  * account without constantly knocking each other out.
  */
+/* sign in and suspend look up "this user's current sessions"; the per-request check reads
+   by _id, which needs nothing extra */
+@CompoundIndexes({
+    @CompoundIndex(name = "user_current", def = "{'userId': 1, 'current': 1}"),
+    /* a user's session history newest first, and the anomaly sweep's startedAt window */
+    @CompoundIndex(name = "user_started", def = "{'userId': 1, 'startedAt': -1}")
+})
 @Document("sessions")
 public class ActiveSession {
     @Id private String id;            // the sid carried in the token

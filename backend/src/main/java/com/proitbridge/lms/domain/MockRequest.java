@@ -2,8 +2,14 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import java.time.Instant;
 import java.util.*;
+/* mentor desks read their learners' mock requests by status */
+@CompoundIndexes({
+    @CompoundIndex(name = "learner_status", def = "{'learnerId': 1, 'status': 1}")
+})
 @Document("mock_requests")
 public class MockRequest {
     @Id private String id;

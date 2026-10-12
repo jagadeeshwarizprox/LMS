@@ -3,10 +3,21 @@ package com.proitbridge.lms.domain;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 
 import java.time.Instant;
 
 /** One sign in attempt, kept long enough to count. */
+/*
+ * Indexes for twenty thousand learners and their logs.
+ *
+ * Every sign in checks the recent failures for that email inside a short window.
+ */
+@CompoundIndexes({
+    @CompoundIndex(name = "email_at", def = "{'email': 1, 'at': -1}"),
+    @CompoundIndex(name = "ip_at", def = "{'ip': 1, 'at': -1}")
+})
 @Document("login_attempts")
 public class LoginAttempt {
 

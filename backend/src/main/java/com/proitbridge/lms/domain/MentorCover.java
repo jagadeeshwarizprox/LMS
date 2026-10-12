@@ -3,6 +3,8 @@ package com.proitbridge.lms.domain;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -19,6 +21,10 @@ import java.time.LocalDate;
  * Only an admin can arrange this. A mentor handing their own learners to someone else,
  * unrecorded, is how a caseload quietly becomes somebody else's problem.
  */
+/* cover expiry and the visibility check read active rows only */
+@CompoundIndexes({
+    @CompoundIndex(name = "active", def = "{'active': 1}")
+})
 @Document("mentor_cover")
 public class MentorCover {
 

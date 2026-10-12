@@ -1,13 +1,35 @@
 server:
   port: ${PORT:8080}
   forward-headers-strategy: framework
+  # finish in-flight requests on a redeploy instead of cutting them off
+  shutdown: graceful
+  tomcat:
+    threads:
+      # every request is blocking Mongo I/O, so threads, not CPU, are the ceiling.
+      # 200 threads against a 100 connection Mongo pool (MONGODB_URI maxPoolSize)
+      max: ${TOMCAT_MAX_THREADS:200}
+      min-spare: ${TOMCAT_MIN_SPARE:20}
+    # queued connections once every thread is busy; beyond this the OS refuses
+    accept-count: ${TOMCAT_ACCEPT_COUNT:200}
+    max-connections: ${TOMCAT_MAX_CONNECTIONS:8192}
+    # time to receive the request after connecting; nginx in front keeps it short
+    connection-timeout: ${TOMCAT_CONNECTION_TIMEOUT:10s}
+    keep-alive-timeout: ${TOMCAT_KEEPALIVE_TIMEOUT:30s}
+    max-keep-alive-requests: 1000
 
 spring:
   application:
     name: pib-lms
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  mvc:
+    async:
+      # only async handlers use this; a stuck one is cut off rather than holding a thread
+      request-timeout: ${MVC_ASYNC_TIMEOUT:30s}
   data:
     mongodb:
-      uri: ${MONGODB_URI:mongodb://localhost:27017/pib_lms}
+      # pool options belong in the URI (docker-compose.yml sets maxPoolSize=100 there)
+      uri: ${MONGODB_URI:mongodb://localhost:27017/pib_lms?maxPoolSize=100&minPoolSize=5}
       auto-index-creation: true
   mail:
     host: ${SMTP_HOST:localhost}

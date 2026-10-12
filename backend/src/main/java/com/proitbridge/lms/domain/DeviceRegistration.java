@@ -2,6 +2,8 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import java.time.Instant;
 import java.util.*;
 
@@ -11,6 +13,10 @@ import java.util.*;
  * always let back in; only a new one past the limit needs an admin to release a slot,
  * which puts a human between a shared password and a new viewer.
  */
+/* sign in reads a user's devices, and looks one device up by its browser id */
+@CompoundIndexes({
+    @CompoundIndex(name = "user_device", def = "{'userId': 1, 'deviceId': 1}")
+})
 @Document("devices")
 public class DeviceRegistration {
     @Id private String id;

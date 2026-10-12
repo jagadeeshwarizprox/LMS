@@ -2,8 +2,14 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import java.time.Instant;
 import java.util.*;
+/* chapter tests read a learner's attempts on one chapter, progress reads all of them */
+@CompoundIndexes({
+    @CompoundIndex(name = "learner_chapter", def = "{'learnerId': 1, 'chapterId': 1}")
+})
 @Document("quiz_attempts")
 public class QuizAttempt {
     @Id private String id;

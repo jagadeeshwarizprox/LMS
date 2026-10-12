@@ -2,6 +2,10 @@ package com.proitbridge.lms.service;
 
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Service;
 
 import java.time.*;
@@ -34,6 +38,7 @@ public class ThisWeekService {
     private final MockRequestRepository mocks;
     private final StudyTimeService studyTime;
     private final LearnerService learnerService;
+    private final MongoTemplate mongo;
 
     public ThisWeekService(LearnerRepository learners, ChapterRepository chapters,
                            TopicRepository topics,
@@ -41,7 +46,9 @@ public class ThisWeekService {
                            ProgressRepository progress, AssignmentRepository assignments,
                            SlotRepository slots, BookingRepository bookings,
                            ProgressCallRepository calls, MockRequestRepository mocks,
-                           StudyTimeService studyTime, LearnerService learnerService) {
+                           StudyTimeService studyTime, LearnerService learnerService,
+                           MongoTemplate mongo) {
+        this.mongo = mongo;
         this.learners = learners; this.chapters = chapters; this.topics = topics;
         this.modules = modules;
         this.bundles = bundles; this.progress = progress; this.assignments = assignments;
@@ -86,12 +93,17 @@ public class ThisWeekService {
 
         /* the next session they can actually attend */
         Instant now = Instant.now();
-        slots.findAll().stream()
-                .filter(s -> s.getStartsAt() != null && s.getStartsAt().isAfter(now))
-                .filter(s -> "BOTH".equals(s.getTrackScope())
-                        || s.getTrackScope().equals(l.getTrackType().name()))
-                .filter(s -> s.getBatchId() == null || s.getBatchId().equals(l.getBatchId()))
-                .min(Comparator.comparing(Slot::getStartsAt))
+        /* the first one, found by the database over the startsAt index: future, in their
+           track, and either batch-less or their own batch's */
+        List<String> tracks = l.getTrackType() == null ? List.of("BOTH")
+                : List.of("BOTH", l.getTrackType().name());
+        Criteria batchOk = l.getBatchId() == null ? Criteria.where("batchId").is(null)
+                : new Criteria().orOperator(Criteria.where("batchId").is(null),
+                        Criteria.where("batchId").is(l.getBatchId()));
+        mongo.find(Query.query(Criteria.where("startsAt").gt(now).and("trackScope").in(tracks))
+                        .addCriteria(batchOk)
+                        .with(Sort.by(Sort.Direction.ASC, "startsAt")).limit(1), Slot.class)
+                .stream().findFirst()
                 .ifPresent(s -> items.add(Map.of("kind", "SESSION",
                         "title", label(s.getKind()),
                         "detail", pretty(s.getStartsAt())

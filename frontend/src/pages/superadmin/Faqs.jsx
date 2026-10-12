@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
 import { useToast } from '../../context/ToastContext'
 import { TableSkeleton } from '../../components/Skeletons'
-import { Card, Page, Tag } from '../../components/Ui'
+import { Card, LoadError, Page, Tag } from '../../components/Ui'
 
 const PLACEMENTS = [
   ['LOGIN', 'Sign in screen'], ['GATES', 'Onboarding card'], ['CHAPTER', 'Chapter player'],
@@ -15,8 +15,12 @@ export default function Faqs() {
   const [rows, setRows] = useState(null)
   const [draft, setDraft] = useState({ question: '', answer: '', placement: 'HELP', trackScope: 'BOTH' })
 
-  const load = () => api.get('/faqs').then(setRows)
+  const [loadError, setLoadError] = useState(null)
+  const load = () => api.get('/faqs')
+    .then((r) => { setRows(r); setLoadError(null) })
+    .catch((e) => setLoadError(e.message))
   useEffect(() => { load() }, [])
+  if (loadError && !rows) return <Page title="Questions and answers"><LoadError error={loadError} onRetry={load} /></Page>
   if (!rows) return <TableSkeleton />
 
   const save = async () => {

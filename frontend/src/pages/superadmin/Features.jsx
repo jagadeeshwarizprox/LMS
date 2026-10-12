@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
 import { useToast } from '../../context/ToastContext'
 import { TableSkeleton } from '../../components/Skeletons'
-import { Card, Grid, Note, Page, Stat, Switch, Tabs, Tag } from '../../components/Ui'
+import { Card, Grid, LoadError, Note, Page, Stat, Switch, Tabs, Tag } from '../../components/Ui'
 
 /**
  * Which parts of the app a learner actually sees, and which course they hold.
@@ -17,11 +17,16 @@ export default function Features() {
   const [courses, setCourses] = useState([])
   const [tab, setTab] = useState(0)
 
+  const [loadError, setLoadError] = useState(null)
   const load = async () => {
-    setRows(await api.get('/super/features'))
+    try {
+      setRows(await api.get('/super/features'))
+      setLoadError(null)
+    } catch (e) { setLoadError(e.message); return }
     setCourses(await api.get('/super/catalogue').then((t) => t.bundles || []).catch(() => []))
   }
   useEffect(() => { load() }, [])
+  if (loadError && !rows) return <Page title="Features and access"><LoadError error={loadError} onRetry={load} /></Page>
   if (!rows) return <TableSkeleton />
 
   /* the switch moves under the finger and rolls back if the server disagrees:

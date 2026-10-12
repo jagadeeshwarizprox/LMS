@@ -24,7 +24,8 @@ export default function SuperHome() {
       api.get('/super/catalogue').catch(() => ({ modules: [], bundles: [] })),
       api.get('/super/people').catch(() => []),
       api.get('/super/catalogue/readiness').catch(() => []),
-      api.get('/super/activity').catch(() => [])
+      /* the log is paged now; the home card only ever showed the latest six */
+      api.get('/super/activity?size=6').then((r) => r.rows || []).catch(() => [])
     ]).then(([overview, tree, people, readiness, activity]) =>
       setState({ overview, tree, people, readiness, activity }))
   }, [])

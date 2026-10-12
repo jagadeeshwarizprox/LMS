@@ -21,6 +21,7 @@ export default function TaskThread({ assignmentId, role = 'MENTOR', onChanged })
   const [feedback, setFeedback] = useState('')
   const [scores, setScores] = useState({})
   const [busy, setBusy] = useState(false)
+  const [sending, setSending] = useState(false)
   const [url, setUrl] = useState('')
   const [files, setFiles] = useState([])
   const [notes, setNotes] = useState('')
@@ -37,12 +38,21 @@ export default function TaskThread({ assignmentId, role = 'MENTOR', onChanged })
   const byId = Object.fromEntries((a.files || []).map((f) => [f.id, f]))
   const nameOf = (id) => byId[id]?.filename
 
+  /* a failed comment used to throw unhandled and leave the box looking sent; a double
+     press posted it twice */
   const send = async () => {
-    if (!comment.trim()) return
-    const base = role === 'MENTOR' ? 'mentor' : 'learner'
-    await api.post(`/${base}/tasks/${assignmentId}/comment`, { body: comment })
-    setComment('')
-    await load()
+    if (!comment.trim() || sending) return
+    setSending(true)
+    try {
+      const base = role === 'MENTOR' ? 'mentor' : 'learner'
+      await api.post(`/${base}/tasks/${assignmentId}/comment`, { body: comment })
+      setComment('')
+      await load()
+    } catch (e) {
+      toast.push(e.message, 'bad')
+    } finally {
+      setSending(false)
+    }
   }
 
   /**
@@ -294,6 +304,7 @@ export default function TaskThread({ assignmentId, role = 'MENTOR', onChanged })
             linkedId={assignmentId}
             label="Attach your work"
             onAllUploaded={(fs) => setFiles((prev) => [...prev, ...fs])}
+            onRemoved={(f) => setFiles((prev) => prev.filter((x) => x.id !== f.id))}
           />
           <div className="row g-2 align-items-end mt-2">
             <div className="col-md-5">
@@ -326,7 +337,7 @@ export default function TaskThread({ assignmentId, role = 'MENTOR', onChanged })
           onChange={(e) => setComment(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && send()}
         />
-        <button className="btn btn-quiet" onClick={send} disabled={!comment.trim()}>Comment</button>
+        <button className="btn btn-quiet" onClick={send} disabled={!comment.trim() || sending}>Comment</button>
       </div>
     </div>
   )

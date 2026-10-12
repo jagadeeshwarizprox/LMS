@@ -50,8 +50,17 @@ export function useStudyClock(enabled) {
     return () => clearInterval(timer.current)
   }, [state?.checkedIn])
 
-  const checkIn = async (note) => setState(await api.post('/learner/study/check-in', { note }))
-  const checkOut = async () => setState(await api.post('/learner/study/check-out', {}))
+  /* each returns the new state, so a caller can read today's total off it */
+  const checkIn = async (note) => {
+    const r = await api.post('/learner/study/check-in', { note })
+    setState(r)
+    return r
+  }
+  const checkOut = async () => {
+    const r = await api.post('/learner/study/check-out', {})
+    setState(r)
+    return r
+  }
 
   return { state, checkIn, checkOut, reload: load }
 }
@@ -66,17 +75,30 @@ export function hhmm(minutes = 0) {
 export default function CheckIn() {
   const { state, checkIn, checkOut } = useStudyClock(true)
   const toast = useToast()
+  /* a double click used to fire two check ins; the server now hands back the open
+     one, and the button waits for the answer either way */
+  const [busy, setBusy] = useState(false)
   if (!state) return null
 
   const live = state.checkedIn ? state.todayMinutes : state.todayMinutes
 
   const start = async () => {
-    await checkIn(null)
-    toast.push('Checked in. Your time is counting.')
+    if (busy) return
+    setBusy(true)
+    try {
+      await checkIn(null)
+      toast.push('Checked in. Your time is counting.')
+    } catch (e) { toast.push(e.message, 'bad') }
+    finally { setBusy(false) }
   }
   const stop = async () => {
-    const r = await checkOut()
-    toast.push(`Checked out. ${hhmm(r?.todayMinutes ?? state.todayMinutes)} today.`)
+    if (busy) return
+    setBusy(true)
+    try {
+      const r = await checkOut()
+      toast.push(`Checked out. ${hhmm(r?.todayMinutes ?? state.todayMinutes)} today.`)
+    } catch (e) { toast.push(e.message, 'bad') }
+    finally { setBusy(false) }
   }
 
   return (
@@ -84,6 +106,7 @@ export default function CheckIn() {
       <button
         className={`checkin-btn ${state.checkedIn ? 'on' : ''}`}
         onClick={state.checkedIn ? stop : start}
+        disabled={busy}
         title={state.checkedIn ? 'Check out and settle your time' : 'Start counting your study time'}
       >
         <span className="checkin-dot" />

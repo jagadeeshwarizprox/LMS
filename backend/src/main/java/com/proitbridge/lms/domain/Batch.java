@@ -2,10 +2,20 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.*;
+/*
+ * Indexes for twenty thousand learners and their logs.
+ *
+ * Batches a mentor runs.
+ */
+@CompoundIndexes({
+    @CompoundIndex(name = "mentor", def = "{'mentorId': 1}")
+})
 @Document("batches")
 public class Batch {
     @Id private String id;

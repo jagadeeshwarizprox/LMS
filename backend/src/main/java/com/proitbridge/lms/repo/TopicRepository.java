@@ -10,4 +10,7 @@ public interface TopicRepository extends MongoRepository<Topic, String> {
     List<Topic> findByChapterIdIn(Collection<String> chapterIds);
     long countByChapterId(String chapterId);
     long countByModuleId(String moduleId);
+
+    /* the topic a video belongs to, by the videoRef index, instead of scanning topics */
+    Optional<Topic> findFirstByVideoRef(String videoRef);
 }

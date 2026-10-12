@@ -17,6 +17,7 @@ export default function MockInterviews() {
   const [eligibility, setEligibility] = useState(null)
   const [mocks, setMocks] = useState([])
   const [moduleId, setModuleId] = useState('')
+  const [busy, setBusy] = useState(false)
 
   const load = async () => {
     setEligibility(await api.get('/learner/mock-eligibility'))
@@ -27,12 +28,16 @@ export default function MockInterviews() {
 
   if (loading || !learner || !eligibility) return <TableSkeleton />
 
+  /* one request in flight: a double click used to file two */
   const request = async () => {
+    if (busy) return
+    setBusy(true)
     try {
       await api.post('/learner/mocks', { moduleId })
       toast.push('Requested. Your mentor picks a time from here.')
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
+    finally { setBusy(false) }
   }
 
   return (
@@ -51,7 +56,7 @@ export default function MockInterviews() {
                 <option key={m.moduleId} value={m.moduleId}>{m.name}</option>
               ))}
             </select>
-            <button className="btn btn-pib" onClick={request}>
+            <button className="btn btn-pib" onClick={request} disabled={busy}>
               {learner.trackType === 'BATCH' ? 'Request a mock' : 'Book a mock'}
             </button>
           </div>

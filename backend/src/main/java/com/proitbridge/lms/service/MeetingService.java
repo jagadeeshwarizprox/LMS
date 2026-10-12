@@ -3,6 +3,10 @@ package com.proitbridge.lms.service;
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -27,29 +31,51 @@ public class MeetingService {
     private final LearnerRepository learners;
     private final UserRepository users;
     private final ActivityService activity;
+    private final StandingRoomResolver standing;
     private final int openBeforeMin;
     private final int openAfterMin;
+    private final MongoTemplate mongo;
 
     public MeetingService(MeetingRoomRepository rooms, SlotRepository slots,
                           BookingRepository bookings, LearnerRepository learners,
                           UserRepository users, ActivityService activity,
+                          StandingRoomResolver standing,
                           @Value("${lms.meeting.open-before-minutes}") int openBeforeMin,
-                          @Value("${lms.meeting.open-after-minutes}") int openAfterMin) {
+                          @Value("${lms.meeting.open-after-minutes}") int openAfterMin,
+                          MongoTemplate mongo) {
+        this.mongo = mongo;
         this.rooms = rooms; this.slots = slots; this.bookings = bookings;
         this.learners = learners; this.users = users; this.activity = activity;
+        this.standing = standing;
         this.openBeforeMin = openBeforeMin; this.openAfterMin = openAfterMin;
     }
 
     public MeetingRoom roomFor(String mentorId) {
-        return rooms.findByOwnerId(mentorId).orElse(null);
+        return standingRoom(mentorId).orElse(null);
+    }
+
+    /**
+     * The mentor's standing room: the one that is not pinned to a single session.
+     *
+     * A mentor can own several rooms now, one standing and any number made for one
+     * session's own link, so "the room whose owner is me" is no longer one row. Rooms
+     * the previous version made per session carry no pinned flag, so "oldest non-pinned"
+     * picked them; StandingRoomResolver decides by how the room is used instead.
+     */
+    public Optional<MeetingRoom> standingRoom(String mentorId) {
+        return standing.standingRoom(mentorId);
     }
 
     public MeetingRoom saveRoom(String mentorId, String joinUrl, String passcode, String label) {
-        MeetingRoom r = rooms.findByOwnerId(mentorId).orElseGet(MeetingRoom::new);
+        MeetingRoom r = standingRoom(mentorId).orElseGet(MeetingRoom::new);
         r.setOwnerId(mentorId);
         r.setJoinUrl(joinUrl);
         r.setPasscode(passcode);
-        r.setLabel(label == null ? users.findById(mentorId).map(User::getFullName).orElse("Room") : label);
+        /* a form that does not send the label keeps the one already there */
+        if (label != null && !label.isBlank()) r.setLabel(label);
+        else if (r.getLabel() == null) {
+            r.setLabel(users.findById(mentorId).map(User::getFullName).orElse("Room"));
+        }
         return rooms.save(r);
     }
 
@@ -70,7 +96,7 @@ public class MeetingService {
             }
         }
         if (s.getMentorId() == null) return null;
-        return rooms.findByOwnerId(s.getMentorId())
+        return standingRoom(s.getMentorId())
                 .filter(r -> r.getJoinUrl() != null && !r.getJoinUrl().isBlank())
                 .orElse(null);
     }
@@ -96,11 +122,13 @@ public class MeetingService {
      */
     public List<Map<String, Object>> joinCheck() {
         Instant now = Instant.now();
-        return slots.findAll().stream()
-                .filter(s -> s.getStartsAt() != null)
-                .filter(s -> s.getStartsAt().isAfter(now.minus(1, ChronoUnit.DAYS)))
-                .sorted(Comparator.comparing(Slot::getStartsAt))
-                .limit(40)
+        /* the next forty straight off the startsAt index, and their hosts in one read */
+        List<Slot> next = mongo.find(Query.query(Criteria.where("startsAt").gt(now.minus(1, ChronoUnit.DAYS)))
+                .with(Sort.by(Sort.Direction.ASC, "startsAt")).limit(40), Slot.class);
+        Map<String, String> hosts = new HashMap<>();
+        users.findAllById(next.stream().map(Slot::getMentorId).filter(Objects::nonNull)
+                .collect(Collectors.toSet())).forEach(u -> hosts.put(u.getId(), u.getFullName()));
+        return next.stream()
                 .map(s -> {
                     MeetingRoom room = roomForSlot(s);
                     Map<String, Object> m = new LinkedHashMap<>();
@@ -108,8 +136,7 @@ public class MeetingService {
                     m.put("kind", s.getKind());
                     m.put("startsAt", s.getStartsAt());
                     m.put("trackScope", s.getTrackScope());
-                    m.put("mentor", s.getMentorId() == null ? null
-                            : users.findById(s.getMentorId()).map(User::getFullName).orElse(null));
+                    m.put("mentor", s.getMentorId() == null ? null : hosts.get(s.getMentorId()));
                     m.put("room", room == null ? null : room.getLabel());
                     if (room == null) {
                         m.put("problem", s.getMentorId() == null

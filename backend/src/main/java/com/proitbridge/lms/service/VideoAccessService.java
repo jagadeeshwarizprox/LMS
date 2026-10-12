@@ -4,6 +4,8 @@ import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
 import com.proitbridge.lms.service.video.VideoProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -12,6 +14,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -34,6 +37,8 @@ public class VideoAccessService {
     private final BundleRepository bundles;
     private final ProgressRepository progress;
     private final VideoAccessLogRepository logs;
+    private final ResourceRepository resources;
+    private final MongoTemplate mongo;
     private final Map<String, VideoProvider> providers = new ConcurrentHashMap<>();
     private final ActivityService activity;
     private final String defaultProvider;
@@ -47,7 +52,9 @@ public class VideoAccessService {
                               BatchRepository batches, BundleRepository bundles,
                               ProgressRepository progress, VideoAccessLogRepository logs,
                               List<VideoProvider> providerList, ActivityService activity,
-                              @Value("${lms.video.provider}") String defaultProvider) {
+                              @Value("${lms.video.provider}") String defaultProvider,
+                              ResourceRepository resources, MongoTemplate mongo) {
+        this.resources = resources; this.mongo = mongo;
         this.videos = videos; this.chapters = chapters; this.topics = topics; this.recordings = recordings;
         this.learners = learners; this.batches = batches; this.bundles = bundles;
         this.progress = progress; this.logs = logs; this.activity = activity;
@@ -121,8 +128,13 @@ public class VideoAccessService {
             }
             case "TOPIC" -> {
                 if (!l.modulesUnlocked()) return "Finish onboarding to open your modules.";
-                Topic tp = topics.findAll().stream()
-                        .filter(x -> v.getId().equals(x.getVideoRef())).findFirst().orElse(null);
+                /* by the videoRef index. A video attached as a topic resource is gated as
+                   the topic it sits on, found through the resource's own videoRef index */
+                Topic tp = topics.findFirstByVideoRef(v.getId())
+                        .or(() -> resources.findFirstByVideoRef(v.getId())
+                                .map(Resource::getTopicId).filter(Objects::nonNull)
+                                .flatMap(topics::findById))
+                        .orElse(null);
                 if (tp == null) return null;
                 Bundle b = l.getBundleId() == null ? null : bundles.findById(l.getBundleId()).orElse(null);
                 if (b == null || !b.getModuleIds().contains(tp.getModuleId())) {
@@ -141,8 +153,7 @@ public class VideoAccessService {
                 return null;
             }
             case "RECORDING" -> {
-                Recording r = recordings.findAll().stream()
-                        .filter(x -> v.getId().equals(x.getVideoRef())).findFirst().orElse(null);
+                Recording r = recordings.findFirstByVideoRef(v.getId()).orElse(null);
                 if (r == null) return null;
                 if (r.getBatchId() != null && !r.getBatchId().equals(l.getBatchId())) {
                     return "This recording belongs to another batch.";
@@ -161,9 +172,15 @@ public class VideoAccessService {
 
     private boolean chapterLocked(Learner l, Chapter c) {
         List<Chapter> siblings = chapters.findByModuleIdOrderByPositionAsc(c.getModuleId());
+        /* the learner's rows in one indexed read, not one read per earlier chapter (keyed by
+           chapter, since rows written before moduleId was stored do not carry it) */
+        Map<String, Progress> byChapter = new java.util.HashMap<>();
+        for (Progress p : progress.findByLearnerId(l.getId())) {
+            byChapter.putIfAbsent(p.getChapterId(), p);
+        }
         for (Chapter prev : siblings) {
             if (prev.getId().equals(c.getId())) return false;
-            Progress p = progress.findByLearnerIdAndChapterId(l.getId(), prev.getId()).orElse(null);
+            Progress p = byChapter.get(prev.getId());
             boolean done = p != null && p.isWatched()
                     && (!prev.getTest().isEnabled() || p.getQuizScore() != null)
                     && (!prev.getAssignment().isEnabled() || "APPROVED".equals(p.getTaskStatus()));
@@ -211,6 +228,18 @@ public class VideoAccessService {
     }
 
     public List<Map<String, Object>> library() {
+        /* grants in the last thirty days for every video, as one grouped count */
+        Map<String, Long> grants = new java.util.HashMap<>();
+        for (org.bson.Document d : mongo.aggregate(
+                org.springframework.data.mongodb.core.aggregation.Aggregation.newAggregation(
+                        org.springframework.data.mongodb.core.aggregation.Aggregation.match(
+                                Criteria.where("issuedAt").gt(Instant.now().minus(30, ChronoUnit.DAYS))),
+                        org.springframework.data.mongodb.core.aggregation.Aggregation.group("videoId").count().as("n")),
+                VideoAccessLog.class, org.bson.Document.class).getMappedResults()) {
+            Object n = d.get("n");
+            grants.put(String.valueOf(d.get("_id")), n instanceof Number x ? x.longValue() : 0L);
+        }
+        /* the video catalogue grows with content, not with learners, so it is read whole */
         return videos.findAll().stream().map(v -> Map.<String, Object>of(
                 "id", v.getId(),
                 "title", v.getTitle() == null ? "" : v.getTitle(),
@@ -219,9 +248,7 @@ public class VideoAccessService {
                 "masked", mask(v.getExternalId()),
                 "durationSec", v.getDurationSec(),
                 "active", v.isActive(),
-                "grantsLast30", logs.findByVideoId(v.getId()).stream()
-                        .filter(l -> l.getIssuedAt().isAfter(Instant.now().minus(30, ChronoUnit.DAYS)))
-                        .count()
+                "grantsLast30", grants.getOrDefault(v.getId(), 0L)
         )).toList();
     }
 

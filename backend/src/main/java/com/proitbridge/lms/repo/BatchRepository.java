@@ -8,4 +8,5 @@ public interface BatchRepository extends MongoRepository<Batch, String> {
     Optional<Batch> findByCode(String code);
     List<Batch> findByOpenTrue();
     List<Batch> findAllByOrderByStartDateDesc();
+    List<Batch> findByMentorId(String mentorId);
 }

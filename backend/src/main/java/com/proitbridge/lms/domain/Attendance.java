@@ -2,11 +2,18 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
 import java.time.Instant;
 import java.util.*;
 
 /** Who actually turned up. Attendance is the other half of running a session. */
+/* a learner's attendance history; slotId already carries its own index */
+@CompoundIndexes({
+    @CompoundIndex(name = "learner", def = "{'learnerId': 1}"),
+    @CompoundIndex(name = "slot_learner", def = "{'slotId': 1, 'learnerId': 1}")
+})
 @Document("attendance")
 public class Attendance {
     @Id private String id;

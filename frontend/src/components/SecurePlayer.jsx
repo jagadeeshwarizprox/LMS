@@ -66,6 +66,26 @@ export default function SecurePlayer({ videoRef, onProgress, onEnded, poster, tr
   const player = useRef(null)
   const reported = useRef(new Set())
   const lastSaved = useRef(0)
+  /*
+   * Time actually played, not where the playhead is.
+   *
+   * The 25/50/75/95 reports, and the "watched" a topic hangs on, used to read the
+   * scrubber position, so dragging to the end of a forty minute video marked it done in
+   * two seconds. Each poll adds the time that passed only when it looks like playback
+   * (forward, and no more than the speed allows in a second or so); a seek or a nudge
+   * moves the playhead without adding anything. A resume starts from the progress the
+   * server already holds, never from the resume position itself.
+   */
+  const played = useRef(0)
+  /*
+   * The share of the video the server already counts as watched (0..1), kept as a
+   * fraction rather than seconds. YouTube reports a duration of 0 until playback has
+   * actually begun, so turning it into seconds in onReady gave a resumed learner no
+   * credit at all and they could never reach 95 again. It is multiplied by the live
+   * duration wherever a percentage or a watchedSec is worked out.
+   */
+  const reachedFrac = useRef(0)
+  const lastTime = useRef(null)
   const hideTimer = useRef(null)
 
   const [state, setState] = useState('idle')   // idle | loading | playing | error
@@ -104,7 +124,9 @@ export default function SecurePlayer({ videoRef, onProgress, onEnded, poster, tr
     if (!d || now < 5) return
     if (!force && Math.abs(now - lastSaved.current) < 15) return
     lastSaved.current = now
-    api.post(`/learner/watch/${videoRef}`, { seconds: now, durationSec: d }).catch(() => {})
+    /* the same sum the 25/50/75/95 reports use, so the server and the player agree */
+    const watchedSec = Math.round(Math.min(d, reachedFrac.current * d + played.current))
+    return api.post(`/learner/watch/${videoRef}`, { seconds: now, durationSec: d, watchedSec }).catch(() => {})
   }, [track, videoRef])
 
   /* a position is only useful if it survives the tab closing, which is the most
@@ -133,7 +155,12 @@ export default function SecurePlayer({ videoRef, onProgress, onEnded, poster, tr
     return () => document.removeEventListener('fullscreenchange', onFs)
   }, [])
 
-  const report = (pct) => onProgress?.(pct)
+  /* the position is saved first and the report waits for it, because the server checks
+     the stored progress before it accepts "watched" and a save up to fifteen seconds
+     stale would refuse a learner who had genuinely finished */
+  const report = (pct) => {
+    Promise.resolve(savePosition(true)).finally(() => onProgress?.(pct))
+  }
 
   const start = async (fromStart) => {
     if (!videoRef) { setError('No video is attached to this chapter yet.'); setState('error'); return }
@@ -159,7 +186,11 @@ export default function SecurePlayer({ videoRef, onProgress, onEnded, poster, tr
           onReady: (e) => {
             if (startAt > 0) e.target.seekTo(startAt, true)
             e.target.playVideo()
-            setDur(e.target.getDuration() || 0)
+            const d0 = e.target.getDuration() || 0
+            played.current = 0
+            lastTime.current = startAt
+            reachedFrac.current = fromStart ? 0 : Math.min(1, (resume?.reached || 0) / 100)
+            setDur(d0)
             setState('playing')
           },
           onStateChange: (e) => {
@@ -167,7 +198,10 @@ export default function SecurePlayer({ videoRef, onProgress, onEnded, poster, tr
             if (e.data === YT.PlayerState.PAUSED) setPlaying(false)
             if (e.data === YT.PlayerState.ENDED) {
               setPlaying(false)
-              report(100)
+              /* reaching the end by dragging there is not watching it */
+              const d = e.target.getDuration?.() || 0
+              const got = d > 0 ? watchedPct(d) : 0
+              if (got >= 95) report(100)
               onEnded?.()
             }
           }
@@ -180,6 +214,11 @@ export default function SecurePlayer({ videoRef, onProgress, onEnded, poster, tr
     }
   }
 
+  /* earlier credit plus time genuinely played since this resume, against the live duration */
+  const watchedPct = (d) => (d > 0
+    ? Math.min(100, Math.round(((reachedFrac.current * d + played.current) / d) * 100))
+    : 0)
+
   /* watch tracking replaces the honour-system "mark as watched" button */
   const poll = () => {
     const id = setInterval(() => {
@@ -191,8 +230,15 @@ export default function SecurePlayer({ videoRef, onProgress, onEnded, poster, tr
       setDur(d)
       setAt(now)
       setBuffered((p.getVideoLoadedFraction?.() || 0) * 100)
-      const pct = Math.round((now / d) * 100)
-      setMark(pct)
+      const prev = lastTime.current
+      lastTime.current = now
+      if (prev != null) {
+        const delta = now - prev
+        const rate = p.getPlaybackRate?.() || 1
+        if (delta > 0 && delta <= rate * 2 + 1) played.current += delta
+      }
+      setMark(Math.round((now / d) * 100))
+      const pct = watchedPct(d)
       ;[25, 50, 75, 95].forEach((step) => {
         if (pct >= step && !reported.current.has(step)) {
           reported.current.add(step)

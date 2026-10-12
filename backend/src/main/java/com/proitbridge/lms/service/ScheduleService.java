@@ -2,6 +2,11 @@ package com.proitbridge.lms.service;
 
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.aggregation.Aggregation;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -35,16 +40,27 @@ public class ScheduleService {
     private final MessageService messages;
     private final ActivityService activity;
     private final SettingsService settings;
+    private final MentorCoverService cover;
+    private final StandingRoomResolver standing;
+    private final MongoTemplate mongo;
+
+    /* how many learners a sweep holds in memory at once */
+    private static final int PAGE = 500;
 
     public ScheduleService(SessionScheduleRepository schedules, SlotRepository slots,
                            BookingRepository bookings, AttendanceRepository attendance,
                            LearnerRepository learners, UserRepository users,
                            MeetingRoomRepository rooms, MessageService messages,
-                           ActivityService activity, SettingsService settings) {
+                           ActivityService activity, SettingsService settings,
+                           MentorCoverService cover, StandingRoomResolver standing,
+                           MongoTemplate mongo) {
+        this.mongo = mongo;
         this.schedules = schedules; this.slots = slots; this.bookings = bookings;
         this.attendance = attendance; this.learners = learners; this.users = users;
         this.rooms = rooms; this.messages = messages; this.activity = activity;
         this.settings = settings;
+        this.cover = cover;
+        this.standing = standing;
     }
 
     public void assertAdmin(String role, String message) {
@@ -107,7 +123,11 @@ public class ScheduleService {
                     && (userId.equals(r.get("ownerId"))
                         || (r.get("hostRotation") instanceof List<?> hr && hr.contains(userId)));
             r.put("mine", mine);
-            r.put("canEdit", admin || (mine && mayCreate));
+            /* the same rule assertMayEditSchedule applies: being on the rotation lets a
+               mentor see a schedule as theirs, but pausing or changing it is the owner's.
+               This said yes to rotation hosts and the server then refused them. */
+            boolean owner = userId != null && userId.equals(r.get("ownerId"));
+            r.put("canEdit", admin || (owner && mayCreate));
         }).toList();
     }
 
@@ -129,6 +149,28 @@ public class ScheduleService {
         }
     }
 
+    /**
+     * Running a session that already exists: marking attendance, writing notes, calling
+     * it off or moving it.
+     *
+     * This is not the same act as creating one, so session.mentorsMayCreate does not
+     * apply. With that switch off the office plans the week, but the mentor still has to
+     * take the register for their own session, and assertMayEdit refused them. A mentor
+     * covering for the host (an active cover, today inside its dates) runs the session
+     * in their place, so they pass too. Anybody else's session stays refused.
+     */
+    public Slot assertMayRunSlot(String userId, String role, String slotId) {
+        Slot s = slots.findById(slotId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such session."));
+        if ("ADMIN".equals(role) || "SUPER_ADMIN".equals(role)) return s;
+        if (userId != null && (userId.equals(s.getMentorId())
+                || (s.getMentorId() != null && cover.canActOn(userId, s.getMentorId())))) {
+            return s;
+        }
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                "That session is somebody else's. Ask the office to move it.");
+    }
+
     /** The same rule as creating, read off the session itself rather than the request. */
     public void assertMayEditSlot(String userId, String role, String slotId) {
         Slot s = slots.findById(slotId)
@@ -139,11 +181,101 @@ public class ScheduleService {
     public SessionSchedule save(SessionSchedule body, String mentorId) {
         if (body.getMentorId() == null) body.setMentorId(mentorId);
         if (body.getRoomId() == null) {
-            rooms.findByOwnerId(body.getMentorId()).ifPresent(r -> body.setRoomId(r.getId()));
+            standingRoom(body.getMentorId()).ifPresent(r -> body.setRoomId(r.getId()));
         }
         SessionSchedule saved = schedules.save(body);
         generate();                       // the first slots appear immediately
         return saved;
+    }
+
+    /** Fields a caller may never set on a schedule through the edit form. */
+    private static final Set<String> SCHEDULE_PROTECTED = Set.of("id", "skippedKeys");
+
+    /**
+     * Saving a repeating schedule from the board, new or existing.
+     *
+     * The body used to be bound straight onto a SessionSchedule and saved, so a request
+     * carrying an id replaced the stored row whole: anybody could overwrite any schedule
+     * by id, and a form that only sent the time reset every other field to its default.
+     * An existing schedule is now loaded, checked against the same ownership rule as
+     * pausing it, and only the fields actually sent are written onto it. A new one from
+     * a mentor is always theirs.
+     */
+    public SessionSchedule saveFromBoard(Map<String, Object> body, String userId, String role) {
+        boolean admin = "ADMIN".equals(role) || "SUPER_ADMIN".equals(role);
+        Map<String, Object> patch = new LinkedHashMap<>();
+        body.forEach((k, v) -> {
+            if (v != null && !SCHEDULE_PROTECTED.contains(k)) patch.put(k, v);
+        });
+        if (!admin) {
+            /* a mentor cannot hand a schedule to somebody else or set a rotation */
+            patch.remove("mentorId");
+            patch.remove("hostRotation");
+        }
+
+        Object idv = body.get("id");
+        String id = idv == null || String.valueOf(idv).isBlank() ? null : String.valueOf(idv);
+        if (id != null) {
+            assertMayEditSchedule(userId, role, id);
+            SessionSchedule stored = schedules.findById(id).orElseThrow();
+            String oldHost = stored.getMentorId();
+            String oldRoom = stored.getRoomId();
+            applySchedule(stored, patch);
+            /* handing a schedule to another host left it pointing at the old host's standing
+               room, so learners joined the wrong mentor's call. A room chosen on purpose (sent
+               in the patch, or a pinned one) is left alone; only the old standing room follows */
+            String newHost = stored.getMentorId();
+            if (newHost != null && !newHost.equals(oldHost) && !patch.containsKey("roomId")
+                    && oldRoom != null && oldRoom.equals(standingRoomId(oldHost))) {
+                stored.setRoomId(standingRoom(newHost).map(MeetingRoom::getId).orElse(null));
+            }
+            SessionSchedule saved = schedules.save(stored);
+            generate();
+            return saved;
+        }
+
+        assertMayEdit(userId, role, admin ? null : (String) body.get("mentorId"));
+        SessionSchedule fresh = new SessionSchedule();
+        applySchedule(fresh, patch);
+        if (!admin) {
+            fresh.setMentorId(userId);
+            fresh.setHostRotation(new ArrayList<>());
+        }
+        return saveFromBoard(fresh);
+    }
+
+    /** Writes only the keys present in the patch; everything else stays as stored. */
+    private void applySchedule(SessionSchedule sc, Map<String, Object> p) {
+        if (p.containsKey("kind")) sc.setKind(str(p, "kind", sc.getKind()));
+        if (p.containsKey("weekday")) sc.setWeekday(num(p, "weekday", sc.getWeekday()));
+        if (p.containsKey("startTime")) sc.setStartTime(str(p, "startTime", sc.getStartTime()));
+        if (p.containsKey("durationMin")) sc.setDurationMin(num(p, "durationMin", sc.getDurationMin()));
+        if (p.containsKey("mentorId")) sc.setMentorId(str(p, "mentorId", sc.getMentorId()));
+        if (p.containsKey("roomId")) sc.setRoomId(str(p, "roomId", sc.getRoomId()));
+        if (p.containsKey("trackScope")) sc.setTrackScope(str(p, "trackScope", sc.getTrackScope()));
+        if (p.containsKey("batchId")) sc.setBatchId(str(p, "batchId", null));
+        if (p.containsKey("capacity")) sc.setCapacity(num(p, "capacity", sc.getCapacity()));
+        if (p.containsKey("active")) sc.setActive(bool(p.get("active"), sc.isActive()));
+        if (p.containsKey("label")) sc.setLabel(str(p, "label", null));
+        if (p.containsKey("topic")) sc.setTopic(str(p, "topic", null));
+        if (p.containsKey("speaker")) sc.setSpeaker(str(p, "speaker", null));
+        if (p.containsKey("openToAllBatches")) {
+            sc.setOpenToAllBatches(bool(p.get("openToAllBatches"), sc.isOpenToAllBatches()));
+        }
+        if (p.containsKey("published")) sc.setPublished(bool(p.get("published"), sc.isPublished()));
+        if (p.get("hostRotation") instanceof List<?> hr) {
+            sc.setHostRotation(hr.stream().filter(Objects::nonNull).map(String::valueOf)
+                    .collect(Collectors.toCollection(ArrayList::new)));
+        }
+        if (sc.getWeekday() < 1 || sc.getWeekday() > 7) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Pick a day of the week.");
+        }
+    }
+
+    private static boolean bool(Object v, boolean fallback) {
+        if (v instanceof Boolean b) return b;
+        if (v == null) return fallback;
+        return Boolean.parseBoolean(String.valueOf(v));
     }
 
     public List<Map<String, Object>> mine(String mentorId) {
@@ -160,10 +292,9 @@ public class ScheduleService {
             m.put("capacity", s.getCapacity());
             m.put("active", s.isActive());
             m.put("label", s.getLabel());
-            m.put("upcoming", slots.findAll().stream()
-                    .filter(x -> s.getId().equals(x.getScheduleId()))
-                    .filter(x -> !x.isCancelled() && x.getStartsAt().isAfter(Instant.now()))
-                    .count());
+            /* a count over the scheduleId index, not every slot ever made */
+            m.put("upcoming", mongo.count(Query.query(Criteria.where("scheduleId").is(s.getId())
+                    .and("cancelled").ne(true).and("startsAt").gt(Instant.now())), Slot.class));
             return m;
         }).collect(Collectors.toList());
     }
@@ -178,12 +309,48 @@ public class ScheduleService {
     @Scheduled(cron = "0 15 1 * * *")
     public void generate() {
         LocalDate today = LocalDate.now(IST);
-        Set<String> existing = slots.findAll().stream()
-                .filter(s -> s.getScheduleId() != null)
-                .map(s -> s.getScheduleId() + "@" + s.getStartsAt())
-                .collect(Collectors.toSet());
+        /*
+         * What already exists is every key a slot was generated under, whether it has
+         * since moved or been cancelled, plus every occurrence deliberately taken off.
+         * Keyed on the current start time, a moved slot left its original time looking
+         * empty and a dropped one left nothing at all, and both came back overnight.
+         */
+        /*
+         * Only what could collide is read: the keys this run would create (an occurrence
+         * at or after now, inside the horizon, for an active schedule) and the slots of
+         * those schedules now standing inside that window. Both go over the
+         * (scheduleId, generatedKey) and startsAt indexes, where this used to load every
+         * slot ever generated, a collection that only grows.
+         */
+        List<SessionSchedule> active = schedules.findByActiveTrue();
+        Instant nowAt = Instant.now();
+        Set<String> candidates = new HashSet<>();
+        for (SessionSchedule sc : active) {
+            for (int i = 0; i <= HORIZON_DAYS; i++) {
+                LocalDate d = today.plusDays(i);
+                if (d.getDayOfWeek().getValue() != sc.getWeekday()) continue;
+                Instant at = ZonedDateTime.of(d, LocalTime.parse(sc.getStartTime()), IST).toInstant();
+                if (!at.isBefore(nowAt)) candidates.add(sc.getId() + "@" + at);
+            }
+        }
+        if (candidates.isEmpty()) return;
+        List<String> activeIds = active.stream().map(SessionSchedule::getId).toList();
+        Set<String> existing = new HashSet<>();
+        for (Slot s : mongo.find(Query.query(Criteria.where("scheduleId").in(activeIds)
+                .and("generatedKey").in(candidates)), Slot.class)) {
+            existing.add(s.getGeneratedKey());
+        }
+        Instant horizonEnd = today.plusDays(HORIZON_DAYS + 1).atStartOfDay(IST).toInstant();
+        for (Slot s : mongo.find(Query.query(Criteria.where("scheduleId").in(activeIds)
+                .and("startsAt").gte(nowAt.minusSeconds(60)).lt(horizonEnd)), Slot.class)) {
+            if (s.getGeneratedKey() != null) existing.add(s.getGeneratedKey());
+            existing.add(s.getScheduleId() + "@" + s.getStartsAt());
+        }
+        for (SessionSchedule sc : active) {
+            if (sc.getSkippedKeys() != null) existing.addAll(sc.getSkippedKeys());
+        }
 
-        for (SessionSchedule sc : schedules.findByActiveTrue()) {
+        for (SessionSchedule sc : active) {
             for (int i = 0; i <= HORIZON_DAYS; i++) {
                 LocalDate d = today.plusDays(i);
                 if (d.getDayOfWeek().getValue() != sc.getWeekday()) continue;
@@ -208,6 +375,7 @@ public class ScheduleService {
                 s.setTrackScope(sc.getTrackScope());
                 s.setBatchId(sc.getBatchId());
                 s.setScheduleId(sc.getId());
+                s.setGeneratedKey(sc.getId() + "@" + at);
                 s.setOpenToAllBatches(sc.isOpenToAllBatches());
                 s.setTopic(sc.getTopic());
                 s.setSpeaker(sc.getSpeaker());
@@ -245,11 +413,14 @@ public class ScheduleService {
         Instant fromAt = ZonedDateTime.of(from, LocalTime.MIDNIGHT, IST).toInstant();
         Instant toAt = ZonedDateTime.of(to, LocalTime.MIDNIGHT, IST).toInstant();
 
-        List<Map<String, Object>> rows = slots.findAll().stream()
-                .filter(s -> s.getStartsAt() != null)
-                .filter(s -> !s.getStartsAt().isBefore(fromAt) && s.getStartsAt().isBefore(toAt))
-                .sorted(Comparator.comparing(Slot::getStartsAt))
-                .map(this::boardRow)
+        /* one week over the startsAt index; hosts and booking counts in one read each */
+        List<Slot> week = slotsBetween(fromAt, toAt);
+        Map<String, String> hosts = new HashMap<>();
+        users.findAllById(week.stream().map(Slot::getMentorId).filter(Objects::nonNull)
+                .collect(Collectors.toSet())).forEach(u -> hosts.put(u.getId(), u.getFullName()));
+        Map<String, Long> booked = bookingCounts(week.stream().map(Slot::getId).toList());
+        List<Map<String, Object>> rows = week.stream()
+                .map(s -> boardRow(s, hosts, booked))
                 .collect(Collectors.toList());
 
         Map<String, Object> m = new LinkedHashMap<>();
@@ -261,7 +432,27 @@ public class ScheduleService {
         return m;
     }
 
-    private Map<String, Object> boardRow(Slot s) {
+    /** Slots starting in [from, to), sorted by start, over the startsAt index. */
+    private List<Slot> slotsBetween(Instant from, Instant to) {
+        return mongo.find(Query.query(Criteria.where("startsAt").gte(from).lt(to))
+                .with(Sort.by(Sort.Direction.ASC, "startsAt")), Slot.class);
+    }
+
+    /** Bookings per slot for a set of slots, as one grouped count. */
+    private Map<String, Long> bookingCounts(Collection<String> slotIds) {
+        Map<String, Long> out = new HashMap<>();
+        if (slotIds.isEmpty()) return out;
+        for (org.bson.Document d : mongo.aggregate(Aggregation.newAggregation(
+                        Aggregation.match(Criteria.where("slotId").in(slotIds)),
+                        Aggregation.group("slotId").count().as("n")),
+                Booking.class, org.bson.Document.class).getMappedResults()) {
+            Object n = d.get("n");
+            out.put(String.valueOf(d.get("_id")), n instanceof Number x ? x.longValue() : 0L);
+        }
+        return out;
+    }
+
+    private Map<String, Object> boardRow(Slot s, Map<String, String> hosts, Map<String, Long> booked) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", s.getId());
         m.put("kind", s.getKind());
@@ -271,15 +462,15 @@ public class ScheduleService {
                 .getDisplayName(java.time.format.TextStyle.SHORT, Locale.ENGLISH));
         m.put("time", s.getStartsAt().atZone(IST).toLocalTime().toString());
         m.put("hostId", s.getMentorId());
-        m.put("host", s.getMentorId() == null ? "Unassigned"
-                : users.findById(s.getMentorId()).map(User::getFullName).orElse("Unassigned"));
+        m.put("host", s.getMentorId() == null || hosts.get(s.getMentorId()) == null ? "Unassigned"
+                : hosts.get(s.getMentorId()));
         m.put("trackScope", s.getTrackScope());
         m.put("batchId", s.getBatchId());
         m.put("openToAllBatches", s.isOpenToAllBatches());
         m.put("topic", s.getTopic());
         m.put("speaker", s.getSpeaker());
         m.put("capacity", s.getCapacity());
-        m.put("booked", bookings.countBySlotId(s.getId()));
+        m.put("booked", booked.getOrDefault(s.getId(), 0L));
         m.put("published", s.isPublished());
         m.put("cancelled", s.isCancelled());
         m.put("scheduleId", s.getScheduleId());
@@ -357,15 +548,27 @@ public class ScheduleService {
          * session; leave it blank and the host's own room is used as before.
          */
         String joinUrl = Validate.link(str(body, "joinUrl", null), "Join link");
-        if (joinUrl != null) {
-            s.setRoomId(pinRoom(s.getMentorId(), joinUrl,
-                    str(body, "topic", "Session link"),
-                    str(body, "provider", "ZOOM"),
-                    str(body, "passcode", null), null).getId());
-        } else if (s.getMentorId() != null) {
-            rooms.findByOwnerId(s.getMentorId()).ifPresent(r -> s.setRoomId(r.getId()));
+        if (joinUrl == null) {
+            if (s.getMentorId() != null) standingRoom(s.getMentorId()).ifPresent(r -> s.setRoomId(r.getId()));
+            return slots.save(s);
         }
-        return slots.save(s);
+        /* the slot needs an id before a room can be pinned to it */
+        Slot saved = slots.save(s);
+        saved.setRoomId(pinRoom(saved, joinUrl,
+                str(body, "topic", "Session link"),
+                str(body, "provider", "ZOOM"),
+                str(body, "passcode", null)).getId());
+        return slots.save(saved);
+    }
+
+    /** The id of a host's standing room, or null when there is no host or no room. */
+    private String standingRoomId(String hostId) {
+        return standingRoom(hostId).map(MeetingRoom::getId).orElse(null);
+    }
+
+    /** The mentor's standing room, never one pinned to a single session (see StandingRoomResolver). */
+    private Optional<MeetingRoom> standingRoom(String ownerId) {
+        return standing.standingRoom(ownerId);
     }
 
     /**
@@ -377,17 +580,38 @@ public class ScheduleService {
      * it would leave the old row behind and, worse, would not follow for anybody who had
      * already been handed the link.
      */
-    private MeetingRoom pinRoom(String ownerId, String joinUrl, String label,
-                                String provider, String passcode, String existingRoomId) {
-        MeetingRoom room = existingRoomId == null ? null : rooms.findById(existingRoomId).orElse(null);
-        if (room == null) {
-            room = new MeetingRoom();
-            room.setProvider(provider == null ? "ZOOM" : provider);
+    private MeetingRoom pinRoom(Slot slot, String joinUrl, String label,
+                                String provider, String passcode) {
+        MeetingRoom current = slot.getRoomId() == null ? null
+                : rooms.findById(slot.getRoomId()).orElse(null);
+        /*
+         * Only a room pinned to this very session is edited in place. Anything else,
+         * the host's standing room above all, is shared with every other session that
+         * points at it: editing it here used to move all of the mentor's sessions to the
+         * new link and wipe the passcode on their standing room. A room of its own is
+         * made for this session instead, and only this session is pointed at it.
+         */
+        boolean own = current != null && current.isPinned()
+                && (current.getPinnedSlotId() == null || current.getPinnedSlotId().equals(slot.getId()));
+        MeetingRoom room = own ? current : new MeetingRoom();
+        if (!own) {
+            room.setProvider(provider != null ? provider
+                    : current != null && current.getProvider() != null ? current.getProvider() : "ZOOM");
+            /* the same meeting re-entered keeps the passcode it already had */
+            if (passcode == null && current != null && joinUrl.equals(current.getJoinUrl())) {
+                room.setPasscode(current.getPasscode());
+            }
+        } else if (provider != null) {
+            room.setProvider(provider);
         }
-        room.setOwnerId(ownerId);
+        room.setPinned(true);
+        room.setPinnedSlotId(slot.getId());
+        room.setOwnerId(slot.getMentorId());
         if (label != null) room.setLabel(label);
+        else if (room.getLabel() == null) room.setLabel("Session link");
         room.setJoinUrl(joinUrl);
-        room.setPasscode(passcode);
+        /* a passcode left out is left as it was, not cleared */
+        if (passcode != null) room.setPasscode(passcode);
         return rooms.save(room);
     }
 
@@ -429,6 +653,7 @@ public class ScheduleService {
             if (at == null) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Give the session a date and time.");
             }
+            keepGeneratedKey(s);
             s.setStartsAt(Instant.parse(at));
         }
         if (body.containsKey("hostId")) {
@@ -441,11 +666,11 @@ public class ScheduleService {
                 /* cleared on purpose: fall back to whoever is hosting */
                 s.setRoomId(null);
                 if (s.getMentorId() != null) {
-                    rooms.findByOwnerId(s.getMentorId()).ifPresent(r -> s.setRoomId(r.getId()));
+                    standingRoom(s.getMentorId()).ifPresent(r -> s.setRoomId(r.getId()));
                 }
             } else {
-                s.setRoomId(pinRoom(s.getMentorId(), joinUrl, s.getTopic(), null,
-                        str(body, "passcode", null), s.getRoomId()).getId());
+                s.setRoomId(pinRoom(s, joinUrl, s.getTopic(), str(body, "provider", null),
+                        str(body, "passcode", null)).getId());
             }
         }
         return slots.save(s);
@@ -463,6 +688,15 @@ public class ScheduleService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such session."));
         long taken = bookings.countBySlotId(slotId);
         if (taken == 0) {
+            /* remember the occurrence was taken off, or tonight's run puts it back */
+            if (s.getScheduleId() != null) {
+                String key = s.getGeneratedKey() != null ? s.getGeneratedKey()
+                        : s.getScheduleId() + "@" + s.getStartsAt();
+                schedules.findById(s.getScheduleId()).ifPresent(sc -> {
+                    sc.getSkippedKeys().add(key);
+                    schedules.save(sc);
+                });
+            }
             slots.delete(s);
             return Map.of("deleted", true, "told", 0);
         }
@@ -477,8 +711,16 @@ public class ScheduleService {
     public Slot reassign(String slotId, String mentorId) {
         Slot s = slots.findById(slotId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such session."));
+        /* a session on its own pinned link keeps it; one on the old host's standing
+           room moves to the new host's */
+        MeetingRoom cur = s.getRoomId() == null ? null : rooms.findById(s.getRoomId()).orElse(null);
         s.setMentorId(mentorId);
-        rooms.findByOwnerId(mentorId).ifPresent(r -> s.setRoomId(r.getId()));
+        if (cur != null && cur.isPinned()) {
+            cur.setOwnerId(mentorId);
+            rooms.save(cur);
+        } else {
+            standingRoom(mentorId).ifPresent(r -> s.setRoomId(r.getId()));
+        }
         return slots.save(s);
     }
 
@@ -490,9 +732,7 @@ public class ScheduleService {
         Instant toAt = ZonedDateTime.of(from.plusDays(7), LocalTime.MIDNIGHT, IST).toInstant();
         List<Slot> released = new ArrayList<>();
         int n = 0;
-        for (Slot s : slots.findAll()) {
-            if (s.getStartsAt() == null) continue;
-            if (s.getStartsAt().isBefore(fromAt) || !s.getStartsAt().isBefore(toAt)) continue;
+        for (Slot s : slotsBetween(fromAt, toAt)) {
             if (s.isPublished() == published) continue;
             s.setPublished(published);
             slots.save(s);
@@ -514,15 +754,34 @@ public class ScheduleService {
                     + " are up:\n\n"
                     + released.stream().map(this::lineFor).collect(Collectors.joining("\n"))
                     + "\n\nOpen Sessions in the LMS to book or join.";
-            for (Learner l : learners.findAll()) {
-                if (l.isOnHold()) continue;
-                if (released.stream().noneMatch(x -> inScopeFor(x, l))) continue;
-                messages.send(l.getId(), null, "ProITBridge",
-                        "This week's sessions", body, "ANNOUNCEMENT");
-                told++;
+            /* learners not on hold, a page of PAGE at a time by _id, rather than the whole
+               collection in memory at once */
+            String after = null;
+            while (true) {
+                List<Learner> page = learnerPage(Criteria.where("onHold").ne(true), after);
+                if (page.isEmpty()) break;
+                for (Learner l : page) {
+                    if (released.stream().noneMatch(x -> inScopeFor(x, l))) continue;
+                    messages.send(l.getId(), null, "ProITBridge",
+                            "This week's sessions", body, "ANNOUNCEMENT");
+                    told++;
+                }
+                if (page.size() < PAGE) break;
+                after = page.get(page.size() - 1).getId();
             }
         }
         return Map.of("changed", n, "published", published, "told", told);
+    }
+
+    /**
+     * One page of learners matching `filter` (null for all), after the id `after` (null for
+     * the first page). Paging by _id keeps each page an index range scan however far in.
+     * The id goes in as the string Spring maps it to, so ObjectId and plain ids both work.
+     */
+    private List<Learner> learnerPage(Criteria filter, String after) {
+        Query q = filter == null ? new Query() : new Query(filter);
+        if (after != null) q.addCriteria(Criteria.where("_id").gt(after));
+        return mongo.find(q.with(Sort.by(Sort.Direction.ASC, "_id")).limit(PAGE), Learner.class);
     }
 
     /** One line per session, in the learner's own timezone terms: day, time, what it is. */
@@ -598,8 +857,10 @@ public class ScheduleService {
     }
 
     public Slot reschedule(String slotId, Instant newStart, String mentorId, String mentorName) {
-        Slot s = slots.findById(slotId).orElseThrow();
+        Slot s = slots.findById(slotId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such session."));
         Instant was = s.getStartsAt();
+        keepGeneratedKey(s);
         s.setStartsAt(newStart);
         s.setCancelled(false);
         slots.save(s);
@@ -609,6 +870,14 @@ public class ScheduleService {
                     "The session that was on " + was + " now runs at " + newStart + ".", "MESSAGE");
         }
         return s;
+    }
+
+    /** A generated slot made before keys existed takes its key from where it stands now,
+     *  before it moves, so the generator still recognises the original occurrence. */
+    private void keepGeneratedKey(Slot s) {
+        if (s.getScheduleId() != null && s.getGeneratedKey() == null && s.getStartsAt() != null) {
+            s.setGeneratedKey(s.getScheduleId() + "@" + s.getStartsAt());
+        }
     }
 
     /* ---------------------------------------------------------------- attendance */
@@ -623,19 +892,43 @@ public class ScheduleService {
                 .map(Booking::getLearnerId).collect(Collectors.toList());
         if (expected.isEmpty()) {
             // an open group session has no bookings, so the whole eligible cohort is the sheet
-            expected = learners.findAll().stream()
-                    .filter(l -> s.getBatchId() == null || s.getBatchId().equals(l.getBatchId()))
-                    .filter(l -> "BOTH".equals(s.getTrackScope())
-                            || s.getTrackScope().equals(l.getTrackType().name()))
-                    .filter(l -> s.getMentorId().equals(l.getMentorId()) || s.getCapacity() > 5)
-                    .map(Learner::getId).collect(Collectors.toList());
+            /* the same three rules, as a query: the batch, the track, and the mentor's own
+               learners unless the session is a big group one */
+            Criteria c = null;
+            boolean any = false;
+            if (s.getBatchId() != null) { c = Criteria.where("batchId").is(s.getBatchId()); any = true; }
+            if (s.getTrackScope() != null && !"BOTH".equals(s.getTrackScope())) {
+                c = any ? c.and("trackType").is(s.getTrackScope())
+                        : Criteria.where("trackType").is(s.getTrackScope());
+                any = true;
+            }
+            if (s.getCapacity() <= 5) {
+                c = any ? c.and("mentorId").is(s.getMentorId())
+                        : Criteria.where("mentorId").is(s.getMentorId());
+            }
+            expected = new ArrayList<>();
+            String after = null;
+            while (true) {
+                List<Learner> page = learnerPage(c, after);
+                if (page.isEmpty()) break;
+                for (Learner l : page) expected.add(l.getId());
+                if (page.size() < PAGE) break;
+                after = page.get(page.size() - 1).getId();
+            }
         }
 
+        /* names for the whole sheet in two reads, not two per row */
+        Map<String, String> userOf = new HashMap<>();
+        learners.findAllById(new HashSet<>(expected)).forEach(l -> userOf.put(l.getId(), l.getUserId()));
+        Map<String, String> nameOf = new HashMap<>();
+        users.findAllById(userOf.values().stream().filter(Objects::nonNull).collect(Collectors.toSet()))
+                .forEach(u -> nameOf.put(u.getId(), u.getFullName()));
         List<Map<String, Object>> rows = expected.stream().map(id -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("learnerId", id);
-            m.put("name", learners.findById(id).flatMap(l -> users.findById(l.getUserId()))
-                    .map(User::getFullName).orElse("Learner"));
+            String uid = userOf.get(id);
+            String nm = uid == null ? null : nameOf.get(uid);
+            m.put("name", nm == null ? "Learner" : nm);
             m.put("state", marked.getOrDefault(id, ""));
             return m;
         }).collect(Collectors.toList());

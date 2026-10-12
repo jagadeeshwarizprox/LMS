@@ -58,12 +58,16 @@ export default function LearnerHome() {
     }
   }, [loading])
 
-  if (loading) return <RoadmapSkeleton />
   if (error) return <Page title="We could not load your LMS"><div className="locked-note">{error}</div></Page>
+  /* the provider reports not-loading for one render between sign in and its first
+     request, with no data yet; reading learner then threw and blanked the page */
+  if (loading || !learner) return <RoadmapSkeleton />
 
   const watchGuide = async () => {
-    await api.post('/learner/guide-video')
-    await reload()
+    try {
+      await api.post('/learner/guide-video')
+      await reload()
+    } catch (e) { toast.push(e.message, 'bad') }
   }
 
   /*
@@ -136,7 +140,10 @@ export default function LearnerHome() {
             {!gates.prereq && (
               <button
                 className="btn btn-quiet"
-                onClick={async () => { await api.post('/learner/prereq-video'); await reload() }}
+                onClick={async () => {
+                  try { await api.post('/learner/prereq-video'); await reload() }
+                  catch (e) { toast.push(e.message, 'bad') }
+                }}
               >
                 Mark prerequisite video watched
               </button>

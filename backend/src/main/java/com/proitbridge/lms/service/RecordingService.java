@@ -3,6 +3,11 @@ package com.proitbridge.lms.service;
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
 import com.proitbridge.lms.service.video.VideoRefs;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.aggregation.Aggregation;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -57,17 +62,21 @@ public class RecordingService {
     private final AttendanceRepository attendance;
     private final AiInteractionRepository aiLog;
     private final ActivityService activity;
+    private final MentorCoverService cover;
+    private final MongoTemplate mongo;
 
     public RecordingService(RecordingRepository recordings, SlotRepository slots,
                             VideoRepository videos, ModuleRepository modules,
                             ChapterRepository chapters, BatchRepository batches,
                             LearnerRepository learners, UserRepository users,
                             AttendanceRepository attendance, AiInteractionRepository aiLog,
-                            ActivityService activity) {
+                            ActivityService activity, MentorCoverService cover,
+                            MongoTemplate mongo) {
+        this.mongo = mongo;
         this.recordings = recordings; this.slots = slots; this.videos = videos;
         this.modules = modules; this.chapters = chapters; this.batches = batches;
         this.learners = learners; this.users = users; this.attendance = attendance;
-        this.aiLog = aiLog; this.activity = activity;
+        this.aiLog = aiLog; this.activity = activity; this.cover = cover;
     }
 
     /* ============================================================ the queue */
@@ -78,20 +87,24 @@ public class RecordingService {
      */
     public List<Map<String, Object>> pending(String mentorId) {
         Instant now = Instant.now();
-        Set<String> recorded = recordings.findAll().stream()
-                .map(Recording::getSlotId).filter(Objects::nonNull).collect(Collectors.toSet());
-
-        return slots.findAll().stream()
-                .filter(s -> mentorId == null || mentorId.equals(s.getMentorId()))
-                /* a premium one to one is not library content, so it never waits here */
-                .filter(s -> KIND_FROM_SLOT.containsKey(s.getKind()))
-                .filter(s -> !s.isCancelled())
-                .filter(s -> s.getStartsAt() != null)
-                .filter(s -> s.getStartsAt().plus(s.getDurationMin(), ChronoUnit.MINUTES).isBefore(now))
+        /*
+         * Only the window that can be in the queue is read: sessions of a recordable kind
+         * that started in the last sixty days (a session from six months ago is not a
+         * queue item, it is history), over the (mentorId, startsAt) or startsAt index.
+         * Which of them already have a recording is one slotId $in read, not the whole
+         * recordings collection.
+         */
+        List<Slot> window = heldBetween(mentorId, now.minus(60, ChronoUnit.DAYS), now);
+        Set<String> recorded = recordedSlotIds(window);
+        List<Slot> due = window.stream()
                 .filter(s -> !recorded.contains(s.getId()))
-                // a session from six months ago is not a queue item, it is history
-                .filter(s -> s.getStartsAt().isAfter(now.minus(60, ChronoUnit.DAYS)))
-                .sorted(Comparator.comparing(Slot::getStartsAt))
+                .collect(Collectors.toList());
+        Map<String, String> batchCodes = new HashMap<>();
+        batches.findAllById(due.stream().map(Slot::getBatchId).filter(Objects::nonNull)
+                .collect(Collectors.toSet())).forEach(b -> batchCodes.put(b.getId(), b.getCode()));
+        Map<String, Long> present = presentCounts(due.stream().map(Slot::getId).toList());
+
+        return due.stream()
                 .map(s -> {
                     long days = ChronoUnit.DAYS.between(s.getStartsAt(), now);
                     Map<String, Object> m = new LinkedHashMap<>();
@@ -103,14 +116,46 @@ public class RecordingService {
                     m.put("daysWaiting", days);
                     // a week without a recording is a gap somebody has to chase
                     m.put("overdue", days >= 7);
-                    m.put("batch", s.getBatchId() == null ? null
-                            : batches.findById(s.getBatchId()).map(Batch::getCode).orElse(null));
+                    m.put("batch", s.getBatchId() == null ? null : batchCodes.get(s.getBatchId()));
                     m.put("suggestedTitle", suggestTitle(s));
                     m.put("notes", s.getNotes());
-                    m.put("attended", attendance.findBySlotId(s.getId()).stream()
-                            .filter(a -> "PRESENT".equals(a.getState())).count());
+                    m.put("attended", present.getOrDefault(s.getId(), 0L));
                     return m;
                 }).collect(Collectors.toList());
+    }
+
+    /**
+     * Finished, uncancelled sessions of a recordable kind that started after `from`,
+     * oldest first. A premium one to one is not library content, so it is never read.
+     */
+    private List<Slot> heldBetween(String mentorId, Instant from, Instant now) {
+        Criteria c = mentorId == null ? Criteria.where("startsAt").gt(from).lt(now)
+                : Criteria.where("mentorId").is(mentorId).and("startsAt").gt(from).lt(now);
+        c = c.and("kind").in(KIND_FROM_SLOT.keySet()).and("cancelled").ne(true);
+        return mongo.find(Query.query(c).with(Sort.by(Sort.Direction.ASC, "startsAt")), Slot.class).stream()
+                .filter(s -> s.getStartsAt().plus(s.getDurationMin(), ChronoUnit.MINUTES).isBefore(now))
+                .collect(Collectors.toList());
+    }
+
+    /** Which of these sessions already have a recording, over the slotId index. */
+    private Set<String> recordedSlotIds(Collection<Slot> held) {
+        if (held.isEmpty()) return new HashSet<>();
+        return recordings.findBySlotIdIn(held.stream().map(Slot::getId).toList()).stream()
+                .map(Recording::getSlotId).filter(Objects::nonNull).collect(Collectors.toSet());
+    }
+
+    /** PRESENT marks per session, as one grouped count over the attendance slotId index. */
+    private Map<String, Long> presentCounts(Collection<String> slotIds) {
+        Map<String, Long> out = new HashMap<>();
+        if (slotIds.isEmpty()) return out;
+        for (org.bson.Document d : mongo.aggregate(Aggregation.newAggregation(
+                        Aggregation.match(Criteria.where("slotId").in(slotIds).and("state").is("PRESENT")),
+                        Aggregation.group("slotId").count().as("n")),
+                Attendance.class, org.bson.Document.class).getMappedResults()) {
+            Object n = d.get("n");
+            out.put(String.valueOf(d.get("_id")), n instanceof Number x ? x.longValue() : 0L);
+        }
+        return out;
     }
 
     /** "Monday doubt clearing, 18 Aug" writes itself from what the slot already knows. */
@@ -139,6 +184,34 @@ public class RecordingService {
                                java.util.List<String> materialIds) {}
 
     public Recording publish(PublishInput in, String actorId, String actorEmail) {
+        return publish(in, actorId, actorEmail, "MENTOR");
+    }
+
+    /**
+     * Publishing, with the caller's role.
+     *
+     * Any mentor could publish against any session id, and publishing twice for the same
+     * session left two recordings with the slot pointing at whichever came last, the
+     * other orphaned in the library. A session takes one recording: take the first down
+     * to replace it. A mentor publishes for sessions they ran; the office for any.
+     */
+    public Recording publish(PublishInput in, String actorId, String actorEmail, String actorRole) {
+        if (in.slotId() != null && !in.slotId().isBlank()) {
+            Slot target = slots.findById(in.slotId())
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such session."));
+            boolean office = "ADMIN".equals(actorRole) || "SUPER_ADMIN".equals(actorRole);
+            /* a mentor covering for the host ran the session, so the recording is theirs to publish */
+            boolean ran = actorId != null && (actorId.equals(target.getMentorId())
+                    || (target.getMentorId() != null && cover.canActOn(actorId, target.getMentorId())));
+            if (!office && !ran) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "That session is somebody else's. Whoever ran it, or the office, publishes its recording.");
+            }
+            if (target.getRecordingId() != null && !target.getRecordingId().isBlank()) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "This session already has a recording. Take that one down first to replace it.");
+            }
+        }
         if ((in.videoLink() == null || in.videoLink().isBlank())
                 && (in.fileId() == null || in.fileId().isBlank())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
@@ -253,14 +326,20 @@ public class RecordingService {
      * passes null and sees everything. This is where a wrong upload is taken down.
      */
     public List<Map<String, Object>> published(String uploaderId) {
-        return recordings.findAllByOrderByHeldOnDesc().stream()
-                .filter(r -> uploaderId == null || uploaderId.equals(r.getUploadedBy()))
-                .limit(100)
+        /* the newest hundred straight off the heldOn index, filtered in the database */
+        Query q = (uploaderId == null ? new Query()
+                : Query.query(Criteria.where("uploadedBy").is(uploaderId)))
+                .with(Sort.by(Sort.Direction.DESC, "heldOn")).limit(100);
+        List<Recording> rows = mongo.find(q, Recording.class);
+        Map<String, String> names = new HashMap<>();
+        users.findAllById(rows.stream().map(Recording::getUploadedBy).filter(Objects::nonNull)
+                .collect(Collectors.toSet())).forEach(u -> names.put(u.getId(), u.getFullName()));
+        ViewNames vn = viewNames(rows);
+        return rows.stream()
                 .map(r -> {
-                    Map<String, Object> m = view(r);
+                    Map<String, Object> m = view(r, vn);
                     m.put("uploadedById", r.getUploadedBy());
-                    m.put("uploadedBy", r.getUploadedBy() == null ? null
-                            : users.findById(r.getUploadedBy()).map(User::getFullName).orElse(null));
+                    m.put("uploadedBy", r.getUploadedBy() == null ? null : names.get(r.getUploadedBy()));
                     m.put("audience", r.getAudience());
                     return m;
                 }).collect(Collectors.toList());
@@ -274,15 +353,12 @@ public class RecordingService {
     public Map<String, Object> coverage(int days) {
         Instant now = Instant.now();
         Instant from = now.minus(Math.max(1, days), ChronoUnit.DAYS);
-        Set<String> recorded = recordings.findAll().stream()
-                .map(Recording::getSlotId).filter(Objects::nonNull).collect(Collectors.toSet());
-
-        List<Slot> held = slots.findAll().stream()
-                .filter(s -> KIND_FROM_SLOT.containsKey(s.getKind()))
-                .filter(s -> !s.isCancelled() && s.getStartsAt() != null)
-                .filter(s -> s.getStartsAt().isAfter(from))
-                .filter(s -> s.getStartsAt().plus(s.getDurationMin(), ChronoUnit.MINUTES).isBefore(now))
-                .collect(Collectors.toList());
+        /* the window only, over the startsAt index, and its recordings by slotId */
+        List<Slot> held = heldBetween(null, from, now);
+        Set<String> recorded = recordedSlotIds(held);
+        Map<String, String> mentorNames = new HashMap<>();
+        users.findAllById(held.stream().map(Slot::getMentorId).filter(Objects::nonNull)
+                .collect(Collectors.toSet())).forEach(u -> mentorNames.put(u.getId(), u.getFullName()));
 
         Map<String, List<Slot>> byMentor = held.stream().collect(Collectors.groupingBy(
                 s -> s.getMentorId() == null ? "" : s.getMentorId(), LinkedHashMap::new, Collectors.toList()));
@@ -298,7 +374,7 @@ public class RecordingService {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("mentorId", e.getKey().isEmpty() ? null : e.getKey());
             m.put("mentor", e.getKey().isEmpty() ? "Nobody assigned"
-                    : users.findById(e.getKey()).map(User::getFullName).orElse("Unknown"));
+                    : Optional.ofNullable(mentorNames.get(e.getKey())).orElse("Unknown"));
             m.put("held", h);
             m.put("recorded", r);
             m.put("missing", h - r);
@@ -314,8 +390,7 @@ public class RecordingService {
                 .peek(m -> {
                     String mentorId = held.stream().filter(s -> s.getId().equals(m.get("slotId")))
                             .map(Slot::getMentorId).findFirst().orElse(null);
-                    m.put("mentor", mentorId == null ? null
-                            : users.findById(mentorId).map(User::getFullName).orElse(null));
+                    m.put("mentor", mentorId == null ? null : mentorNames.get(mentorId));
                 })
                 .collect(Collectors.toList());
 
@@ -334,15 +409,28 @@ public class RecordingService {
 
     /** What this learner may watch, grouped the way they would look for it. */
     public Map<String, Object> libraryFor(Learner l) {
-        List<Recording> mine = recordings.findAllByOrderByHeldOnDesc().stream()
+        /*
+         * The audience rule as a query, so only what this learner may watch is read: open
+         * to all, their batch's, or their track's. visibleTo still runs over the result,
+         * so the list and the rule cannot drift apart.
+         */
+        List<String> tracks = l.getTrackType() == null ? List.of("BOTH")
+                : List.of("BOTH", l.getTrackType().name());
+        List<Criteria> any = new ArrayList<>();
+        any.add(Criteria.where("audience").nin("BATCH", "TRACK"));
+        if (l.getBatchId() != null) any.add(Criteria.where("audience").is("BATCH").and("batchId").is(l.getBatchId()));
+        any.add(Criteria.where("audience").is("TRACK").and("trackScope").in(tracks));
+        List<Recording> mine = mongo.find(Query.query(new Criteria().orOperator(any.toArray(new Criteria[0])))
+                        .with(Sort.by(Sort.Direction.DESC, "heldOn")), Recording.class).stream()
                 .filter(r -> visibleTo(r, l))
                 .collect(Collectors.toList());
+        ViewNames vn = viewNames(mine);
 
         Map<String, List<Map<String, Object>>> byKind = new LinkedHashMap<>();
         for (String kind : List.of("RECAP", "DOUBT", "PROJECT", "INDUSTRY", "INDUCTION", "MOCK_DEBRIEF")) {
             List<Map<String, Object>> rows = mine.stream()
                     .filter(r -> kind.equals(r.getKind()))
-                    .map(this::view).collect(Collectors.toList());
+                    .map(r -> view(r, vn)).collect(Collectors.toList());
             if (!rows.isEmpty()) byKind.put(kind, rows);
         }
 
@@ -352,7 +440,7 @@ public class RecordingService {
                 .filter(r -> r.getSeriesLabel() != null && !r.getSeriesLabel().isBlank())
                 .sorted(Comparator.comparingInt(Recording::getPartNumber))
                 .collect(Collectors.groupingBy(Recording::getSeriesLabel, LinkedHashMap::new,
-                        Collectors.mapping(this::view, Collectors.toList())));
+                        Collectors.mapping((Recording r) -> view(r, vn), Collectors.toList())));
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("byKind", byKind);
@@ -383,7 +471,24 @@ public class RecordingService {
         };
     }
 
+    /** Module and chapter names for a list of recordings, read once for the list. */
+    private record ViewNames(Map<String, String> modules, Map<String, String> chapters) {}
+
+    private ViewNames viewNames(Collection<Recording> rs) {
+        Map<String, String> mods = new HashMap<>();
+        Map<String, String> chs = new HashMap<>();
+        Set<String> mids = rs.stream().map(Recording::getModuleId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Set<String> cids = rs.stream().map(Recording::getChapterId).filter(Objects::nonNull).collect(Collectors.toSet());
+        if (!mids.isEmpty()) modules.findAllById(mids).forEach(x -> mods.put(x.getId(), x.getName()));
+        if (!cids.isEmpty()) chapters.findAllById(cids).forEach(x -> chs.put(x.getId(), x.getTitle()));
+        return new ViewNames(mods, chs);
+    }
+
     private Map<String, Object> view(Recording r) {
+        return view(r, viewNames(List.of(r)));
+    }
+
+    private Map<String, Object> view(Recording r, ViewNames vn) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", r.getId());
         m.put("title", r.getTitle());
@@ -397,10 +502,8 @@ public class RecordingService {
         m.put("seriesLabel", r.getSeriesLabel());
         m.put("partNumber", r.getPartNumber());
         m.put("totalParts", r.getTotalParts());
-        m.put("module", r.getModuleId() == null ? null
-                : modules.findById(r.getModuleId()).map(CourseModule::getName).orElse(null));
-        m.put("chapter", r.getChapterId() == null ? null
-                : chapters.findById(r.getChapterId()).map(Chapter::getTitle).orElse(null));
+        m.put("module", r.getModuleId() == null ? null : vn.modules().get(r.getModuleId()));
+        m.put("chapter", r.getChapterId() == null ? null : vn.chapters().get(r.getChapterId()));
         return m;
     }
 }

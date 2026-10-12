@@ -2,6 +2,8 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -12,6 +14,12 @@ import java.util.*;
  * browser going away, or by the nightly sweep if someone forgets. Time is counted
  * from real activity, never from a tab left open overnight.
  */
+/* the idle sweep reads open sessions whose last heartbeat is past the cutoff; a learner's
+   day is read on every close */
+@CompoundIndexes({
+    @CompoundIndex(name = "closed_heartbeat", def = "{'closedBy': 1, 'lastHeartbeatAt': 1}"),
+    @CompoundIndex(name = "learner_day", def = "{'learnerId': 1, 'day': 1}")
+})
 @Document("study_sessions")
 public class StudySession {
     @Id private String id;

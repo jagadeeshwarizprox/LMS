@@ -119,9 +119,10 @@ public class ImportService {
      * Off unless a directory is configured, because a poller that finds nothing is a
      * log line every few minutes forever. When it is on, a sheet dropped in that folder
      * is read on the schedule and new rows become accounts in the batch the sheet names.
-     * Provisioning is idempotent on email, so re-reading the same file every cycle is
-     * safe and costs one pass: rows already provisioned come back as EXISTING and
-     * nothing is written.
+     *
+     * A file that has been read is moved into a "processed" folder beside it. It used to
+     * stay put and be re-read every cycle, which re-applied the sheet over anything an
+     * admin had changed since, such as a learner moved by hand to another track.
      */
     @Scheduled(fixedDelayString = "${lms.import.watch-seconds:300}000")
     public void sweepWatchedFolder() {
@@ -135,14 +136,40 @@ public class ImportService {
             for (Path f : listing.filter(Files::isRegularFile).toList()) {
                 String name = f.getFileName().toString().toLowerCase();
                 if (!name.endsWith(".xlsx") && !name.endsWith(".xls")) continue;
+                ImportSummary sum;
                 try (InputStream in = Files.newInputStream(f)) {
-                    ImportSummary sum = read(in, watchDispatchMail, "watched folder", false);
-                    if (sum.created() > 0 || sum.upgraded() > 0) {
-                        log.info("import watch: {} created {}, upgraded {} from {}",
-                                name, sum.created(), sum.upgraded(), watchDir);
-                    }
+                    sum = read(in, watchDispatchMail, "watched folder", false);
                 } catch (Exception e) {
                     log.warn("import watch: could not read {}: {}", name, e.getMessage());
+                    continue;
+                }
+                log.info("import watch: {} created {}, upgraded {}, already here {}, skipped {}",
+                        name, sum.created(), sum.upgraded(), sum.existing(), sum.skipped());
+                /*
+                 * A sheet with rows that failed stays where it is. Moving it to processed
+                 * buried the failures: the rows were never made and nobody looked again.
+                 * Left in place it is re-read next cycle, which is harmless (provisioning is
+                 * idempotent on email, the good rows come back as already here) and keeps
+                 * the errors in the log until somebody fixes the sheet.
+                 */
+                List<ProvisioningService.Outcome> failed = sum.rows() == null ? List.of()
+                        : sum.rows().stream()
+                            .filter(o -> ProvisioningService.ERROR.equals(o.status())).toList();
+                if (!failed.isEmpty()) {
+                    log.warn("import watch: {} has {} row(s) in error, left in place to be fixed: {}",
+                            name, failed.size(), failed.stream()
+                                    .map(o -> o.email() + " (" + o.detail() + ")").toList());
+                    continue;
+                }
+                try {
+                    Path done = dir.resolve("processed");
+                    Files.createDirectories(done);
+                    String stamp = java.time.LocalDateTime.now().toString().replace(':', '-');
+                    Files.move(f, done.resolve(stamp + "-" + f.getFileName()),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException e) {
+                    log.warn("import watch: read {} but could not move it to processed: {}",
+                            name, e.getMessage());
                 }
             }
         } catch (IOException e) {
@@ -196,7 +223,7 @@ public class ImportService {
                     track == null ? trackForRow(row, cols) : track,
                     pick(row, cols, "batch", "batch no", "batch number", "batch code"),
                     date(row, cols, "date of joining", "joining date", "doj", "enrolled on"),
-                    sheet.getSheetName() + "!" + (r + 1));
+                    sheet.getSheetName() + "!" + (r + 1), null);
             out.add(dryRun
                     ? provisioning.wouldProvision(record)
                     : provisioning.provision(record, dispatchMail, actorEmail));
@@ -263,7 +290,7 @@ public class ImportService {
             switch (o.status()) {
                 case "CREATED" -> created++;
                 case "UPGRADED" -> upgraded++;
-                case "EXISTS" -> existing++;
+                case ProvisioningService.EXISTS -> existing++;
                 default -> skipped++;
             }
         }

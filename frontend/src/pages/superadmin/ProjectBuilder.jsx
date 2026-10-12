@@ -309,7 +309,9 @@ function ProjectEditor({ value, rubrics, bundles, onClose, onSaved }) {
                     <span>Scored with</span>
                     <select value={s.rubricId || ''} onChange={(e) => setStage(i, 'rubricId', e.target.value)}>
                       <option value="">No rubric</option>
-                      {rubrics.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                      {/* a rubric switched off is not offered; one already chosen still shows */}
+                      {rubrics.filter((r) => r.active !== false || r.id === s.rubricId)
+                        .map((r) => <option key={r.id} value={r.id}>{r.name}{r.active === false ? ' (off)' : ''}</option>)}
                     </select>
                   </label>
                 )}

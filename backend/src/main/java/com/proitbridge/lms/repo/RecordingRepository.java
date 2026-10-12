@@ -11,4 +11,9 @@ public interface RecordingRepository extends MongoRepository<Recording, String> 
     List<Recording> findByModuleIdOrderByPartNumberAsc(String moduleId);
     List<Recording> findByChapterId(String chapterId);
     List<Recording> findByKindOrderByHeldOnDesc(String kind);
+
+    /* the recording a video belongs to, by the videoRef index */
+    Optional<Recording> findFirstByVideoRef(String videoRef);
+    /* recordings of a set of sessions, by the slotId index */
+    List<Recording> findBySlotIdIn(Collection<String> slotIds);
 }

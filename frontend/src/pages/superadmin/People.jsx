@@ -87,8 +87,9 @@ export default function People() {
   /* before somebody leaves: twelve learners is twelve dialogs from the register, and
      one of them gets missed */
   const reassign = async (p) => {
-    const others = rows.filter((x) => x.id !== p.id && x.active && x.role !== 'LEARNER')
-    if (others.length === 0) { toast.push('Nobody else to move them to.', 'bad'); return }
+    /* learners go to mentors: the server refuses an admin as the target */
+    const others = rows.filter((x) => x.id !== p.id && x.active && x.role === 'MENTOR')
+    if (others.length === 0) { toast.push('No other active mentor to move them to.', 'bad'); return }
     const r = await ask({
       title: `Move ${p.learners} learner${p.learners === 1 ? '' : 's'} off ${p.name}`,
       body: 'Every learner currently with them moves across. Mentor history keeps the '
@@ -105,7 +106,7 @@ export default function People() {
     if (!r) return
     try {
       const out = await api.post(`/super/people/${p.id}/reassign-learners`, r)
-      toast.push(`${out.moved} moved to ${out.to}.`)
+      toast.push(`${out.moved} moved to ${out.to}${out.batches ? `, with ${out.batches} batch${out.batches === 1 ? '' : 'es'}` : ''}.`)
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
   }

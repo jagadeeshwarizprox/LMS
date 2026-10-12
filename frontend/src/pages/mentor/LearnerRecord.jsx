@@ -51,6 +51,8 @@ export default function LearnerRecord() {
   const [tab, setTab] = useState('overview')
   const [study, setStudy] = useState(null)
   const [call, setCall] = useState({ notes: '', nextGoal: '' })
+  /* a second press while the first was in flight logged the call twice */
+  const [logging, setLogging] = useState(false)
   const [mentorHistory, setMentorHistory] = useState([])
   const [brief, setBrief] = useState(null)
 
@@ -106,12 +108,15 @@ export default function LearnerRecord() {
   const premium = o.trackType === 'PREMIUM'
 
   const logCall = async () => {
+    if (logging) return
+    setLogging(true)
     try {
       await api.post(`/mentor/learners/${id}/call`, call)
       toast.push('Call logged. The next one is scheduled two weeks out.')
       setCall({ notes: '', nextGoal: '' })
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
+    finally { setLogging(false) }
   }
 
   return (
@@ -460,7 +465,9 @@ export default function LearnerRecord() {
                     onChange={(e) => setCall((c) => ({ ...c, nextGoal: e.target.value }))} />
                 </div>
                 <div className="col-md-2">
-                  <button className="btn btn-pib w-100" onClick={logCall} disabled={!call.notes}>Log call</button>
+                  <button className="btn btn-pib w-100" onClick={logCall} disabled={!call.notes || logging}>
+                    {logging ? 'Logging\u2026' : 'Log call'}
+                  </button>
                 </div>
               </div>
               {data.calls.length === 0 ? <Empty title="No calls logged yet" /> : (

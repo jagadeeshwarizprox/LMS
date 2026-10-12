@@ -26,7 +26,11 @@ public class Bundle {
     /** Shown on the course card, above the name. */
     private String tag;
     /** Cover colour, used when no image is uploaded. */
-    private String color = "#0a1f44";
+    public static final String DEFAULT_COLOR = "#0a1f44";
+    /* null until somebody picks one. A non-null default here meant every edit posted
+       without a colour carried the default in with it and overwrote the real one; the
+       default is applied where the course is read and when it is first created. */
+    private String color;
     private String imageFileId;
 
     /**
@@ -36,7 +40,9 @@ public class Bundle {
     private boolean published;
     private boolean active = true;
 
-    private Access access = new Access();
+    /* null for the same reason as the colour: "not sent" must be distinguishable from
+       "sent as the defaults" when an edit is merged. Readers go through accessOrDefault. */
+    private Access access;
 
     /** Who a course is open to, and how it opens. */
     public static class Access {
@@ -80,5 +86,7 @@ public class Bundle {
     public boolean isActive() { return active; }
     public void setActive(boolean active) { this.active = active; }
     public Access getAccess() { return access; }
+    public Access accessOrDefault() { return access == null ? new Access() : access; }
+    public String colorOrDefault() { return color == null || color.isBlank() ? DEFAULT_COLOR : color; }
     public void setAccess(Access access) { this.access = access; }
 }

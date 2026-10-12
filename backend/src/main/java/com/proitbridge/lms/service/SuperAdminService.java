@@ -2,6 +2,9 @@ package com.proitbridge.lms.service;
 
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -33,6 +36,19 @@ public class SuperAdminService {
     private final QuizQuestionRepository questions;
     private final OllamaService ai;
     private final CredentialService credentials;
+    private final MentorAssignmentRepository mentorHistory;
+    private final BatchRepository batches;
+    private final MongoTemplate mongo;
+    private final MentorHierarchyService hierarchyTree;
+
+    /** Every role that is not a learner. Staff lists read these off the role index. */
+    private static final List<User.Role> STAFF =
+            List.of(User.Role.MENTOR, User.Role.ADMIN, User.Role.SUPER_ADMIN);
+
+    /** Learners held by one mentor, counted off the mentorId index. */
+    private long caseload(String mentorId) {
+        return mongo.count(new Query(Criteria.where("mentorId").is(mentorId)), Learner.class);
+    }
 
     public SuperAdminService(UserRepository users, LearnerRepository learners, ModuleRepository modules,
                              BundleRepository bundles, ChapterRepository chapters,
@@ -40,8 +56,13 @@ public class SuperAdminService {
                              FeatureRepository features, IntakeFormRepository intakeForms,
                              ProgressRepository progress, PasswordEncoder encoder,
                              ActivityService activity, QuizQuestionRepository questions,
-                             OllamaService ai, MailService mail, CredentialService credentials) {
+                             OllamaService ai, MailService mail, CredentialService credentials,
+                             MentorAssignmentRepository mentorHistory, BatchRepository batches,
+                             MongoTemplate mongo, MentorHierarchyService hierarchyTree) {
+        this.mongo = mongo;
+        this.hierarchyTree = hierarchyTree;
         this.mail = mail;
+        this.mentorHistory = mentorHistory; this.batches = batches;
         this.users = users; this.learners = learners; this.modules = modules; this.bundles = bundles;
         this.chapters = chapters; this.topics = topics; this.features = features; this.intakeForms = intakeForms;
         this.progress = progress; this.encoder = encoder; this.activity = activity;
@@ -50,26 +71,9 @@ public class SuperAdminService {
 
     /* ---------------------------------------------------------------- catalogue */
 
-    public CourseModule saveModule(CourseModule body, String actorEmail) {
-        if (body.getSlug() == null || body.getSlug().isBlank()) {
-            body.setSlug(body.getName().toLowerCase().replaceAll("[^a-z0-9]+", "-"));
-        }
-        CourseModule saved = modules.save(body);
-        activity.log(null, actorEmail, "SAVE_TOPIC", "module", saved.getName());
-        return saved;
-    }
-
-    public Bundle saveBundle(Bundle body, String actorEmail) {
-        Bundle saved = bundles.save(body);
-        activity.log(null, actorEmail, "SAVE_BUNDLE", "bundle", saved.getName());
-        return saved;
-    }
-
-    public Chapter saveChapter(Chapter body, String actorEmail) {
-        Chapter saved = chapters.save(body);
-        activity.log(null, actorEmail, "SAVE_CHAPTER", "chapter", saved.getTitle());
-        return saved;
-    }
+    /* Module, course and chapter writes live in CatalogueService, which merges an edit
+       onto the stored record. The whole-object saves that used to sit here had no
+       caller and would have wiped fields on any future one, so they are gone. */
 
     public List<Map<String, Object>> catalogue() {
         return bundles.findAll().stream().map(b -> {
@@ -79,14 +83,16 @@ public class SuperAdminService {
             m.put("description", b.getDescription());
             m.put("price", b.getPrice());
             m.put("active", b.isActive());
+            Map<String, CourseModule> byId = new HashMap<>();
+            modules.findAllById(b.getModuleIds()).forEach(x -> byId.put(x.getId(), x));
             m.put("modules", b.getModuleIds().stream()
-                    .map(id -> modules.findById(id).orElse(null))
+                    .map(byId::get)
                     .filter(Objects::nonNull)
                     .map(t -> Map.of("id", t.getId(), "name", t.getName(),
                             "chapters", chapters.countByModuleId(t.getId())))
                     .toList());
-            m.put("enrolled", learners.findAll().stream()
-                    .filter(l -> b.getId().equals(l.getBundleId())).count());
+            /* a count off the (bundleId, ...) index, not a scan of every learner per course */
+            m.put("enrolled", mongo.count(new Query(Criteria.where("bundleId").is(b.getId())), Learner.class));
             return m;
         }).collect(Collectors.toList());
     }
@@ -149,6 +155,9 @@ public class SuperAdminService {
             if (edits.getExplanation() != null) q.setExplanation(edits.getExplanation());
             q.setCorrectIndex(edits.getCorrectIndex());
         }
+        /* publishing is the moment a question reaches learners, so it meets the same bar
+           as one written by hand in the chapter editor */
+        CatalogueService.validateQuestion(q);
         q.setDraft(false);
         activity.log(null, actorEmail, "PUBLISH_QUESTION", "chapter", q.getChapterId());
         return questions.save(q);
@@ -183,44 +192,126 @@ public class SuperAdminService {
     }
 
     public User saveStaff(User body, String plainPassword, String actorEmail) {
-        if (body.getId() == null) {
-            if (users.existsByEmailIgnoreCase(body.getEmail())) {
-                throw new ResponseStatusException(HttpStatus.CONFLICT, "That email already has an account.");
-            }
-            body.setLoginId(credentials.loginIdFor(body.getFullName(), body.getEmail(), null));
-            String pw = (plainPassword == null || plainPassword.isBlank())
-                    ? credentials.firstPasswordFor(body.getFullName(), body.getLoginId())
-                    : plainPassword;
-            body.setPasswordHash(encoder.encode(pw));
-            body.setMustChangePassword(true);
-            body.setDefaultPasswordSetAt(Instant.now());
-            lastPassword.set(pw);
-        } else {
-            User existing = users.findById(body.getId()).orElseThrow();
-            body.setPasswordHash(existing.getPasswordHash());
-            body.setMustChangePassword(existing.isMustChangePassword());
-            body.setDefaultPasswordSetAt(existing.getDefaultPasswordSetAt());
-            /* renaming somebody does not move their login id: they have told people what
-               it is, and it is on the mail they were sent */
-            body.setLoginId(existing.getLoginId() != null ? existing.getLoginId()
-                    : credentials.loginIdFor(body.getFullName(), body.getEmail(), body.getId()));
+        if (body.getId() != null) {
+            throw new IllegalStateException("Edits go through updateStaff, which merges.");
         }
+        if (body.getEmail() == null || body.getEmail().isBlank()
+                || body.getFullName() == null || body.getFullName().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "A name and an email are both needed.");
+        }
+        /* stored lower case, like every learner address, so exact lookups find it */
+        body.setEmail(body.getEmail().trim().toLowerCase());
+        if (users.existsByEmailIgnoreCase(body.getEmail())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "That email already has an account.");
+        }
+        body.setLoginId(credentials.loginIdFor(body.getFullName(), body.getEmail(), null));
+        String pw = (plainPassword == null || plainPassword.isBlank())
+                ? credentials.firstPasswordFor(body.getFullName(), body.getLoginId())
+                : plainPassword;
+        body.setPasswordHash(encoder.encode(pw));
+        body.setMustChangePassword(true);
+        body.setDefaultPasswordSetAt(Instant.now());
         User saved = users.save(body);
-
-        String pw = lastPassword.get();
-        lastPassword.remove();
-        if (pw != null) {
-            mail.send(saved.getEmail(), "Your ProITBridge account",
-                    "Hello " + saved.getFullName() + ",\n\n"
-                    + "An account has been created for you as a "
-                    + saved.getRole().name().toLowerCase().replace('_', ' ') + ".\n\n"
-                    + "Sign in at the team page with:\n"
-                    + credentials.credentialLines(saved, pw) + "\n"
-                    + "You will be asked to set your own password the first time.\n\n"
-                    + "Team ProITBridge", "STAFF_CREDENTIALS");
-        }
+        hierarchyTree.invalidate();
+        mail.send(saved.getEmail(), "Your ProITBridge account",
+                "Hello " + saved.getFullName() + ",\n\n"
+                + "An account has been created for you as a "
+                + saved.getRole().name().toLowerCase().replace('_', ' ') + ".\n\n"
+                + "Sign in at the team page with:\n"
+                + credentials.credentialLines(saved, pw) + "\n"
+                + "You will be asked to set your own password the first time.\n\n"
+                + "Team ProITBridge", "STAFF_CREDENTIALS");
+        /* handed back once, by consumeLastPassword, for the response that created it */
+        lastPassword.set(pw);
         activity.log(null, actorEmail, "SAVE_STAFF", "user", saved.getEmail() + " " + saved.getRole());
         return saved;
+    }
+
+    /**
+     * Editing a staff account changes what was sent and nothing else.
+     *
+     * The edit used to build a fresh User from the form and save it over the stored one,
+     * so a rename wiped the phone numbers the form did not carry, the last sign in, the
+     * created date and any suspension. Only the listed fields can be changed here, and
+     * only when the request actually carries them. Switching an account off or on has its
+     * own route with its own checks, so `active` is ignored.
+     */
+    public User updateStaff(String id, Map<String, Object> body, boolean roleMayChange, String actorEmail) {
+        User u = users.findById(id).orElseThrow(() ->
+                new ResponseStatusException(HttpStatus.NOT_FOUND, "No such account."));
+        if (body.containsKey("fullName")) {
+            String name = str(body.get("fullName"));
+            if (name == null || name.isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "A name is needed.");
+            }
+            u.setFullName(name.trim());
+        }
+        if (body.containsKey("email")) {
+            String email = str(body.get("email"));
+            if (email == null || email.isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "An email is needed.");
+            }
+            email = email.trim().toLowerCase();
+            if (!email.equalsIgnoreCase(u.getEmail()) && users.existsByEmailIgnoreCase(email)) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "That email already has an account.");
+            }
+            u.setEmail(email);
+        }
+        if (body.containsKey("loginId")) {
+            String login = str(body.get("loginId"));
+            if (login != null && !login.isBlank() && !login.trim().equalsIgnoreCase(u.getLoginId())) {
+                if (users.findByLoginIdIgnoreCase(login.trim()).isPresent()) {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT, "That login ID is taken.");
+                }
+                u.setLoginId(login.trim().toLowerCase());
+            }
+        }
+        if (body.containsKey("phone")) u.setPhone(Validate.phone(str(body.get("phone")), "Phone number"));
+        if (body.containsKey("whatsapp")) u.setWhatsapp(Validate.phone(str(body.get("whatsapp")), "WhatsApp number"));
+        if (body.containsKey("altPhone")) u.setAltPhone(Validate.phone(str(body.get("altPhone")), "Alternate number"));
+        if (body.containsKey("reportsToId")) {
+            String to = str(body.get("reportsToId"));
+            to = to == null || to.isBlank() ? null : to;
+            if (id.equals(to)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Nobody reports to themselves.");
+            }
+            u.setReportsToId(to);
+        }
+        if (roleMayChange && body.get("role") != null) {
+            User.Role role = User.Role.valueOf(String.valueOf(body.get("role")).toUpperCase());
+            if (role == User.Role.SUPER_ADMIN || role == User.Role.LEARNER) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "A staff account can be a mentor or an admin from here.");
+            }
+            u.setRole(role);
+        }
+        if (u.getLoginId() == null || u.getLoginId().isBlank()) {
+            u.setLoginId(credentials.loginIdFor(u.getFullName(), u.getEmail(), u.getId()));
+        }
+        User saved = users.save(u);
+        hierarchyTree.invalidate();
+        activity.log(null, actorEmail, "SAVE_STAFF", "user", saved.getEmail() + " " + saved.getRole());
+        return saved;
+    }
+
+    private static String str(Object o) { return o == null ? null : String.valueOf(o); }
+
+    /**
+     * Who may act on whom.
+     *
+     * An admin runs learners and mentors. Another admin, or a super admin, is not theirs
+     * to switch off, reset or suspend: the admin routes used to take any id, so an admin
+     * could lock out the super admin. A super admin may act on admins.
+     */
+    public User guardTarget(String targetId, String callerRole) {
+        User t = users.findById(targetId).orElseThrow(() ->
+                new ResponseStatusException(HttpStatus.NOT_FOUND, "No such account."));
+        boolean callerSuper = "SUPER_ADMIN".equals(callerRole);
+        if (!callerSuper && (t.getRole() == User.Role.ADMIN || t.getRole() == User.Role.SUPER_ADMIN)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "An admin account is managed by the super admin.");
+        }
+        return t;
     }
 
     /**
@@ -240,15 +331,14 @@ public class SuperAdminService {
         User u = users.findById(userId).orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.NOT_FOUND, "No such account."));
         if (!active) {
-            int held = learners.findByMentorId(userId).size();
+            int held = (int) caseload(userId);
             if (held > 0) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT,
                         held + (held == 1 ? " learner is" : " learners are")
                         + " still with this mentor. Move them to somebody else first.");
             }
-            long others = users.findAll().stream()
-                    .filter(x -> x.getRole() == User.Role.SUPER_ADMIN && x.isActive()
-                            && !x.getId().equals(userId))
+            long others = users.findByRoleAndActiveTrue(User.Role.SUPER_ADMIN).stream()
+                    .filter(x -> !x.getId().equals(userId))
                     .count();
             if (u.getRole() == User.Role.SUPER_ADMIN && others == 0) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT,
@@ -258,6 +348,7 @@ public class SuperAdminService {
         }
         u.setActive(active);
         users.save(u);
+        hierarchyTree.invalidate();
         activity.log(null, actorEmail, active ? "ENABLE_STAFF" : "DISABLE_STAFF",
                 "user", u.getEmail());
         return Map.of("id", u.getId(), "active", u.isActive());
@@ -272,24 +363,50 @@ public class SuperAdminService {
      */
     public Map<String, Object> reassignLearners(String fromId, String toId, String reason,
                                                 String actorEmail) {
+        if (toId == null || toId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Pick the mentor to move them to.");
+        }
         User to = users.findById(toId).orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.NOT_FOUND, "No such mentor."));
-        if (to.getRole() == User.Role.LEARNER || !to.isActive()) {
+        /* learners are taught by mentors. An admin in this list used to be accepted and
+           the learners then had nobody on the mentor desk */
+        if (to.getRole() != User.Role.MENTOR || !to.isActive()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "Pick an active member of staff to move them to.");
+                    "Pick an active mentor to move them to.");
         }
         if (fromId.equals(toId)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "That is the same mentor.");
         }
+        String why = reason == null || reason.isBlank() ? "Moved with the rest of their mentor's learners" : reason;
         List<Learner> held = learners.findByMentorId(fromId);
         for (Learner l : held) {
+            MentorAssignment h = new MentorAssignment();
+            h.setLearnerId(l.getId());
+            h.setFromMentorId(fromId);
+            h.setToMentorId(toId);
+            h.setReason(why);
+            h.setActorEmail(actorEmail);
+            mentorHistory.save(h);
             l.setMentorId(toId);
             learners.save(l);
         }
+        /* a batch keeps its own mentor, which is who every new joiner is given. Left on
+           the departing mentor, the next learner placed in it would land back with them */
+        int batchesMoved = 0;
+        for (Batch b : batches.findByMentorId(fromId)) {
+            b.setMentorId(toId);
+            batches.save(b);
+            batchesMoved++;
+        }
         activity.log(null, actorEmail, "REASSIGN_LEARNERS", "user",
-                held.size() + " to " + to.getEmail() + (reason == null ? "" : " (" + reason + ")"));
-        return Map.of("moved", held.size(), "to", to.getFullName());
+                held.size() + " learners and " + batchesMoved + " batches to " + to.getEmail()
+                        + (reason == null ? "" : " (" + reason + ")"));
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("moved", held.size());
+        out.put("batches", batchesMoved);
+        out.put("to", to.getFullName());
+        return out;
     }
 
     /**
@@ -339,21 +456,24 @@ public class SuperAdminService {
 
     /** Reporting is transitive: mentor to lead to CTO to CEO. */
     public List<Map<String, Object>> hierarchy() {
-        List<User> staff = users.findAll().stream()
-                .filter(u -> u.getRole() != User.Role.LEARNER).toList();
+        /* staff only, by role off the index: this list never held learners, it just
+           read all twenty thousand of them to throw them away */
+        List<User> staff = users.findByRoleIn(STAFF);
+        Map<String, String> nameOf = new HashMap<>();
+        staff.forEach(u -> nameOf.put(u.getId(), u.getFullName()));
         return staff.stream().map(u -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", u.getId());
             m.put("name", u.getFullName());
             m.put("email", u.getEmail());
             m.put("phone", u.getPhone());
+            m.put("whatsapp", u.getWhatsapp());
+            m.put("altPhone", u.getAltPhone());
             m.put("role", u.getRole());
             m.put("active", u.isActive());
-            m.put("reportsTo", u.getReportsToId() == null ? null
-                    : users.findById(u.getReportsToId()).map(User::getFullName).orElse(null));
+            m.put("reportsTo", u.getReportsToId() == null ? null : nameOf.get(u.getReportsToId()));
             m.put("reportsToId", u.getReportsToId());
-            List<Learner> mine = learners.findByMentorId(u.getId());
-            m.put("learners", mine.size());
+            m.put("learners", caseload(u.getId()));
             m.put("loginId", u.getLoginId());
             /* whether they have ever signed in: a staff account created weeks ago and
                never used is usually somebody who never got the mail */
@@ -367,9 +487,9 @@ public class SuperAdminService {
     public List<String> learnerIdsUnder(String userId) {
         Set<String> staff = new LinkedHashSet<>();
         collect(userId, staff);
-        return learners.findAll().stream()
-                .filter(l -> l.getMentorId() != null && staff.contains(l.getMentorId()))
-                .map(Learner::getId).toList();
+        Query q = new Query(Criteria.where("mentorId").in(staff));
+        q.fields().include("_id");
+        return mongo.find(q, Learner.class).stream().map(Learner::getId).toList();
     }
 
     private void collect(String userId, Set<String> acc) {

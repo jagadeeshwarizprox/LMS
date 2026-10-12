@@ -77,13 +77,16 @@ If that fails, nothing downstream will work. Fix it here.
 Everything below can be skipped. From the unpacked folder:
 
 ```bash
-docker compose up --build
+cp .env.example .env      # then fill in JWT_SECRET, MONGO_PASSWORD, BOOTSTRAP_EMAIL, BOOTSTRAP_PASSWORD
+docker compose up -d --build
 ```
 
-That starts Mongo, builds and runs the API, and serves the built frontend behind nginx.
-Open **http://localhost:8081**. First build takes a few minutes while Maven downloads;
-after that it is seconds. `docker compose down -v` removes the data volumes and gives you
-a clean seed on the next run.
+That starts Mongo (with a password, not reachable from outside), builds and runs the API,
+and serves the frontend through nginx, which forwards `/api/` to the API. Open
+**http://localhost:8081** and sign in at `/staff` with the bootstrap account. First build
+takes a few minutes while Maven downloads; after that it is seconds.
+`docker compose ps` shows all three healthy once ready. `docker compose down -v` removes
+the data volumes and gives you a clean start. Going live: see `DEPLOY.md`.
 
 The rest of this guide is the manual path, which is what you want while developing.
 

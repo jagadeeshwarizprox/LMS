@@ -7,6 +7,7 @@ import { useDialog } from '../../components/Dialog'
 import { useAuth } from '../../context/AuthContext'
 import Avatar from '../../components/Avatar'
 import { TableSkeleton } from '../../components/Skeletons'
+import Pager, { useDebounced, usePagedList } from '../../components/Pager'
 import { Card, Empty, Page, Tag, TrackTag, fmtDateTime } from '../../components/Ui'
 
 export default function Register() {
@@ -14,10 +15,11 @@ export default function Register() {
   const { ask } = useDialog()
   const { user } = useAuth()
   const isSuper = user?.role === 'SUPER_ADMIN'
-  const [rows, setRows] = useState(null)
   const [mentors, setMentors] = useState([])
   const [track, setTrack] = useState('')
   const [q, setQ] = useState('')
+  const [batchFilter, setBatchFilter] = useState('')
+  const [onboarded, setOnboarded] = useState('')
   /* the Mentors screen links in here with ?mentorId=, so clicking a mentor's name shows
      their learners instead of leaving you to scan the whole register by eye */
   const [params, setParams] = useSearchParams()
@@ -31,7 +33,6 @@ export default function Register() {
   /* what WAS issued, kept on screen until dismissed: this is the one moment the
      password is readable, and an admin is usually on the phone when it appears */
   const [issued, setIssued] = useState(null)
-  const [failed, setFailed] = useState(null)
   const [lockouts, setLockouts] = useState([])
   /* the device list for one learner, opened from their row. Nothing is fetched until
      an admin asks, because it is only ever needed for the person on the phone */
@@ -124,23 +125,24 @@ export default function Register() {
     } catch (e) { toast.push(e.message, 'bad') }
   }
 
-  /* a failed load used to leave rows null, which is the skeleton, which is a page that
-     never finishes loading and never says why */
-  const load = async () => {
-    const query = new URLSearchParams()
-    if (track) query.set('trackType', track)
-    if (q) query.set('q', q)
-    if (mentorFilter) query.set('mentorId', mentorFilter)
-    try {
-      setRows(await api.get(`/admin/register?${query}`))
-      setFailed(null)
-    } catch (e) {
-      setRows([])
-      setFailed(e.message)
-    }
-  }
+  /*
+   * The register a page of fifty at a time, filtered and searched on the server.
+   *
+   * It used to fetch every learner and filter in the browser, which at twenty thousand
+   * is a page that takes as long to load as the slowest learner row. The search box
+   * waits 300ms after the last key before asking, and every filter change goes back to
+   * the first page while paging keeps the filters.
+   *
+   * A failed load shows the error card rather than an endless skeleton.
+   */
+  const qSettled = useDebounced(q.trim(), 300)
+  const list = usePagedList((qs) => api.get(`/admin/register?${qs}`), {
+    trackType: track, q: qSettled, mentorId: mentorFilter, batchId: batchFilter, onboarded
+  })
+  const rows = list.data ? list.rows : (list.error ? [] : null)
+  const failed = list.error
+  const load = list.reload
 
-  useEffect(() => { load() }, [track, q, mentorFilter])
   useEffect(() => {
     /* /super/people is super admin only, so an admin got a 403 here and an empty
        mentor dropdown on the page whose job is assigning mentors */
@@ -499,8 +501,20 @@ export default function Register() {
               <option value="PREMIUM">Premium</option>
               <option value="BATCH">Batch</option>
             </select>
+            <select className="form-select" style={{ width: 150 }} value={batchFilter}
+              aria-label="Batch" onChange={(e) => setBatchFilter(e.target.value)}>
+              <option value="">All batches</option>
+              {batches.map((b) => <option key={b.id} value={b.id}>{b.code}</option>)}
+            </select>
+            <select className="form-select" style={{ width: 160 }} value={onboarded}
+              aria-label="Onboarding" onChange={(e) => setOnboarded(e.target.value)}>
+              <option value="">Any onboarding</option>
+              <option value="true">Onboarding done</option>
+              <option value="false">Onboarding open</option>
+            </select>
             <input className="form-control" style={{ width: 220 }}
-              placeholder="Search by learner name or email"
+              placeholder="Search name, email or login ID"
+              aria-label="Search learners"
               value={q} onChange={(e) => setQ(e.target.value)} />
             {mentorFilter && (
               <button className="btn btn-quiet" onClick={() => setParams({})}>
@@ -567,6 +581,8 @@ export default function Register() {
             </table>
           </div>
         )}
+        <Pager page={list.page} size={list.size} total={list.total}
+          onPage={list.setPage} loading={list.loading} noun="learners" />
       </Card>
     </Page>
   )

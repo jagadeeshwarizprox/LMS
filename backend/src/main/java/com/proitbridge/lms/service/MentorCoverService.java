@@ -2,6 +2,9 @@ package com.proitbridge.lms.service;
 
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -34,26 +37,41 @@ public class MentorCoverService {
     private final ActivityService activity;
     private final MentorHierarchyService hierarchy;
     private final BatchRepository batches;
+    private final MongoTemplate mongo;
 
     public MentorCoverService(MentorCoverRepository covers, LearnerRepository learners,
                               UserRepository users, MailService mail,
                               ActivityService activity, MentorHierarchyService hierarchy,
-                              BatchRepository batches) {
+                              BatchRepository batches, MongoTemplate mongo) {
         this.covers = covers; this.learners = learners; this.users = users;
         this.mail = mail; this.activity = activity; this.hierarchy = hierarchy;
-        this.batches = batches;
+        this.batches = batches; this.mongo = mongo;
+    }
+
+    /*
+     * The batches run by any of these mentors, read by mentorId rather than by loading
+     * every batch and filtering. BatchRepository is not ours to extend, so this goes
+     * through MongoTemplate.
+     */
+    public List<Batch> batchesRunBy(Collection<String> mentorIds) {
+        if (mentorIds == null || mentorIds.isEmpty()) return List.of();
+        return mongo.find(Query.query(Criteria.where("mentorId").in(mentorIds)), Batch.class);
     }
 
     /* ------------------------------------------------------------- arranging */
 
     public MentorCover arrange(String mentorId, String coveringMentorId, LocalDate from,
                                LocalDate until, String reason, String actorEmail) {
-        if (mentorId.equals(coveringMentorId)) {
+        if (mentorId != null && mentorId.equals(coveringMentorId)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "A mentor cannot cover for themselves.");
         }
         require(mentorId, "The mentor who is away");
-        require(coveringMentorId, "The mentor covering");
+        User coveringUser = require(coveringMentorId, "The mentor covering");
+        if (!coveringUser.isActive()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    coveringUser.getFullName() + " is switched off and cannot cover anybody.");
+        }
         if (from == null || until == null || until.isBefore(from)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "Give the dates, and make sure the end is not before the start.");
@@ -62,9 +80,11 @@ public class MentorCoverService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "Say why. It stays on the record.");
         }
+        /* two ranges overlap when each starts on or before the other ends. Checking only
+           the end refused a cover in August because one was booked for December */
         boolean already = covers.findByMentorIdAndActiveTrue(mentorId).stream()
-                .filter(c -> c.getUntil() != null)
-                .anyMatch(c -> !c.getUntil().isBefore(from));
+                .filter(c -> c.getFrom() != null && c.getUntil() != null)
+                .anyMatch(c -> !c.getFrom().isAfter(until) && !c.getUntil().isBefore(from));
         if (already) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "This mentor already has cover arranged over those dates.");
@@ -81,7 +101,7 @@ public class MentorCoverService {
 
         String away = nameOf(mentorId);
         String covering = nameOf(coveringMentorId);
-        long n = learners.findByMentorId(mentorId).size();
+        long n = learners.countByMentorId(mentorId);
 
         /*
          * The covering mentor is told what they have picked up, because a queue that
@@ -197,17 +217,16 @@ public class MentorCoverService {
      */
     public List<Learner> learnersVisibleTo(String mentorId) {
         List<String> visible = mentorIdsVisibleTo(mentorId);
-        Set<String> batchIds = batches.findAll().stream()
-                .filter(b -> b.getMentorId() != null && visible.contains(b.getMentorId()))
+        Set<String> batchIds = batchesRunBy(visible).stream()
                 .map(Batch::getId)
-                .collect(Collectors.toSet());
+                .collect(Collectors.toCollection(LinkedHashSet::new));
 
+        /* two indexed reads ($in on mentorId, $in on batchId), not one per mentor and one
+           per batch. Own learners first, as before, then batch members not already listed */
         Map<String, Learner> byId = new LinkedHashMap<>();
-        for (String id : visible) {
-            for (Learner l : learners.findByMentorId(id)) byId.put(l.getId(), l);
-        }
-        for (String bid : batchIds) {
-            for (Learner l : learners.findByBatchId(bid)) byId.putIfAbsent(l.getId(), l);
+        for (Learner l : learners.findByMentorIdIn(visible)) byId.put(l.getId(), l);
+        if (!batchIds.isEmpty()) {
+            for (Learner l : learners.findByBatchIdIn(batchIds)) byId.putIfAbsent(l.getId(), l);
         }
         return new ArrayList<>(byId.values());
     }
@@ -242,8 +261,7 @@ public class MentorCoverService {
          * to be the same rule or one of them is lying, which is the same fault this class
          * already fixed once for learners.
          */
-        return learners.findByBatchId(batchId).stream().anyMatch(l ->
-                (l.getMentorId() != null && visible.contains(l.getMentorId())));
+        return learners.existsByBatchIdAndMentorIdIn(batchId, visible);
     }
 
     public boolean isCovering(String mentorId, String ownerId) {
@@ -258,7 +276,7 @@ public class MentorCoverService {
                 .map(c -> Map.<String, Object>of(
                         "coverId", c.getId(),
                         "mentor", nameOf(c.getMentorId()),
-                        "learners", learners.findByMentorId(c.getMentorId()).size(),
+                        "learners", learners.countByMentorId(c.getMentorId()),
                         "until", String.valueOf(c.getUntil())))
                 .collect(Collectors.toList());
 
@@ -287,7 +305,7 @@ public class MentorCoverService {
                     m.put("from", String.valueOf(c.getFrom()));
                     m.put("until", String.valueOf(c.getUntil()));
                     m.put("reason", c.getReason());
-                    m.put("learners", learners.findByMentorId(c.getMentorId()).size());
+                    m.put("learners", learners.countByMentorId(c.getMentorId()));
                     m.put("active", c.isActive());
                     m.put("running", c.isActive()
                             && !today.isBefore(c.getFrom()) && !today.isAfter(c.getUntil()));
@@ -296,12 +314,16 @@ public class MentorCoverService {
                 }).collect(Collectors.toList());
     }
 
-    private void require(String id, String what) {
+    private User require(String id, String what) {
+        if (id == null || id.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, what + " needs choosing.");
+        }
         User u = users.findById(id).orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.BAD_REQUEST, what + " was not found."));
         if (u.getRole() != User.Role.MENTOR) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, what + " is not a mentor.");
         }
+        return u;
     }
 
     private String nameOf(String id) {

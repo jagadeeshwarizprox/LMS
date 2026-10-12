@@ -3,6 +3,8 @@ package com.proitbridge.lms.domain;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 
 import java.time.Instant;
 
@@ -18,6 +20,10 @@ import java.time.Instant;
  * carries the wrong one, because a "dataset" pointing at a video reference is a bug
  * waiting to reach a learner.
  */
+/* a video grant looks the VIDEO resource up by its video */
+@CompoundIndexes({
+    @CompoundIndex(name = "video", def = "{'videoRef': 1}")
+})
 @Document("resources")
 public class Resource {
 

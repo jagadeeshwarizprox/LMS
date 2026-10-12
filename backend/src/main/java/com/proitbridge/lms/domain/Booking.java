@@ -2,8 +2,15 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import java.time.Instant;
 import java.util.*;
+/* a slot's bookings, a learner's bookings, and "is this learner on this slot" */
+@CompoundIndexes({
+    @CompoundIndex(name = "slot_learner", def = "{'slotId': 1, 'learnerId': 1}"),
+    @CompoundIndex(name = "learner", def = "{'learnerId': 1}")
+})
 @Document("bookings")
 public class Booking {
     @Id private String id;

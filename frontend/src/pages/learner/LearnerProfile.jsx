@@ -23,6 +23,8 @@ export default function LearnerProfile() {
   const [filename, setFilename] = useState('')
   /* an uploaded file, as the alternative to the link box */
   const [file, setFile] = useState(null)
+  /* a double click used to save the same resume as two versions */
+  const [busy, setBusy] = useState(false)
 
   const load = () => api.get('/learner/resumes').then(setResumes).catch(() => setResumes([]))
   useEffect(() => { load() }, [])
@@ -30,6 +32,8 @@ export default function LearnerProfile() {
   if (loading || !learner) return <FormSkeleton />
 
   const addResume = async () => {
+    if (busy) return
+    setBusy(true)
     try {
       await api.post('/learner/resumes', {
         url: url.trim() || null,
@@ -40,6 +44,7 @@ export default function LearnerProfile() {
       setUrl(''); setFilename(''); setFile(null)
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
+    finally { setBusy(false) }
   }
 
   return (
@@ -130,7 +135,7 @@ export default function LearnerProfile() {
                   value={filename} onChange={(e) => setFilename(e.target.value)} />
               </div>
             </div>
-            <button className="btn btn-pib" onClick={addResume} disabled={!url && !file}>
+            <button className="btn btn-pib" onClick={addResume} disabled={busy || (!url && !file)}>
               Add version
             </button>
             {file && (

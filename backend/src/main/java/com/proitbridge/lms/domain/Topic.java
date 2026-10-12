@@ -3,6 +3,8 @@ package com.proitbridge.lms.domain;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 
 /**
  * The leaf a learner actually watches: one video and the files that go with it.
@@ -14,6 +16,10 @@ import org.springframework.data.mongodb.core.mapping.Document;
  * without walking back up through the chapter, and a topic never moves between modules
  * without moving chapter first.
  */
+/* a watch save and a video grant look the topic up by its video */
+@CompoundIndexes({
+    @CompoundIndex(name = "video", def = "{'videoRef': 1}")
+})
 @Document("topics")
 public class Topic {
 

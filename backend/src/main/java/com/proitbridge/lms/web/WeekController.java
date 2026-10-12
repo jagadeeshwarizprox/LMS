@@ -54,15 +54,12 @@ public class WeekController {
      * host rotation, which is what makes one weekly slot cycle across the roster.
      */
     @PostMapping("/schedules")
-    public SessionSchedule saveSchedule(@RequestBody SessionSchedule body) {
+    public SessionSchedule saveSchedule(@RequestBody Map<String, Object> body) {
         AuthUser me = current.get();
-        boolean admin = "ADMIN".equals(me.role()) || "SUPER_ADMIN".equals(me.role());
-        if (!admin) {
-            schedule.assertMayEdit(me.id(), me.role(), body.getMentorId());
-            body.setMentorId(me.id());
-            body.setHostRotation(List.of());
-        }
-        return schedule.saveFromBoard(body);
+        /* taken as a map so the service can tell a field left out from one sent empty:
+           an edit merges onto the stored schedule rather than replacing it, and an id
+           is checked against its owner before anything is written */
+        return schedule.saveFromBoard(body, me.id(), me.role());
     }
 
     @PostMapping("/schedules/{id}/active")

@@ -2,10 +2,15 @@ package com.proitbridge.lms.service;
 
 import com.proitbridge.lms.domain.User;
 import com.proitbridge.lms.repo.UserRepository;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Service;
 
 import java.text.Normalizer;
+import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 
 /**
  * Login IDs and first passwords, in one place.
@@ -25,8 +30,11 @@ public class CredentialService {
     private final UserRepository users;
     private final SettingsService settings;
 
-    public CredentialService(UserRepository users, SettingsService settings) {
+    private final MongoTemplate mongo;
+
+    public CredentialService(UserRepository users, SettingsService settings, MongoTemplate mongo) {
         this.users = users;
+        this.mongo = mongo;
         this.settings = settings;
     }
 
@@ -60,9 +68,46 @@ public class CredentialService {
     }
 
     private boolean taken(String loginId, String excludeUserId) {
-        return users.findByLoginIdIgnoreCase(loginId)
+        return accountByLoginId(loginId)
                 .filter(u -> excludeUserId == null || !excludeUserId.equals(u.getId()))
                 .isPresent();
+    }
+
+    /*
+     * Finding an account by email or login ID without a case-insensitive scan.
+     *
+     * findBy...IgnoreCase is an anchored regex with the i flag, and Mongo answers that by
+     * walking every key of the unique index: twenty thousand comparisons per lookup, and
+     * the import makes one or two per row, mostly misses. Addresses are stored lower case
+     * and login IDs are lower-case slugs, so the exact match on the folded value is the
+     * normal path and rides the unique index. The fallback covers the few staff accounts
+     * saved before staff addresses were folded too: it is restricted to staff roles, so
+     * the case-insensitive comparison runs over a few dozen rows found through the
+     * role index, never over the learners.
+     */
+    private static final List<User.Role> STAFF =
+            List.of(User.Role.MENTOR, User.Role.ADMIN, User.Role.SUPER_ADMIN);
+
+    public Optional<User> accountByEmail(String email) {
+        if (email == null || email.isBlank()) return Optional.empty();
+        String folded = email.trim().toLowerCase(Locale.ROOT);
+        Optional<User> exact = users.findByEmail(folded);
+        return exact.isPresent() ? exact : staffMatch("email", folded);
+    }
+
+    public Optional<User> accountByLoginId(String loginId) {
+        if (loginId == null || loginId.isBlank()) return Optional.empty();
+        String folded = loginId.trim().toLowerCase(Locale.ROOT);
+        Optional<User> exact = users.findByLoginId(folded);
+        return exact.isPresent() ? exact : staffMatch("loginId", folded);
+    }
+
+    private Optional<User> staffMatch(String field, String folded) {
+        Query q = new Query(new Criteria().andOperator(
+                Criteria.where("role").in(STAFF),
+                Criteria.where(field).regex("^" + java.util.regex.Pattern.quote(folded) + "$", "i")))
+                .limit(1);
+        return Optional.ofNullable(mongo.findOne(q, User.class));
     }
 
     /** priya@123, from the first word of the name. */

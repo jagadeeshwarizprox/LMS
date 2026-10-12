@@ -15,12 +15,17 @@ import Icon from './Icon'
  *
  * `onUploaded` still fires per file, so every existing single-file caller keeps working
  * unchanged. `onAllUploaded` gets the whole batch when it settles.
+ *
+ * `onRemoved` fires with the uploaded file when a finished row is taken off the list.
+ * The cross only ever tidied this list, so a file a person removed here was still in
+ * whatever the parent had collected and went out with the submission anyway.
  */
 export default function FileUpload({
   purpose = 'TASK',
   linkedId,
   onUploaded,
   onAllUploaded,
+  onRemoved,
   multiple = true,
   label = 'Attach a file',
   accept
@@ -51,7 +56,7 @@ export default function FileUpload({
         const r = await api.upload(`/files?${q}`, fd)
         done.push(r)
         setRows((rs) => rs.map((row, n) => (n === at
-          ? { ...row, state: 'done', id: r.id, note: `${Math.round(r.sizeBytes / 1024)} KB` }
+          ? { ...row, state: 'done', id: r.id, file: r, note: `${Math.round(r.sizeBytes / 1024)} KB` }
           : row)))
         onUploaded?.(r)
       } catch (e) {
@@ -76,7 +81,11 @@ export default function FileUpload({
     take(e.dataTransfer.files)
   }
 
-  const remove = (at) => setRows((rs) => rs.filter((_, n) => n !== at))
+  const remove = (at) => {
+    const row = rows[at]
+    setRows((rs) => rs.filter((_, n) => n !== at))
+    if (row?.state === 'done' && row.id) onRemoved?.(row.file || { id: row.id })
+  }
   const anyDone = rows.some((r) => r.state === 'done')
 
   return (

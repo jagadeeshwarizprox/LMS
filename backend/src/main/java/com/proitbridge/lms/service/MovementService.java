@@ -31,15 +31,17 @@ public class MovementService {
     private final LearnerMoveRepository moves;
     private final MentorAssignmentRepository mentorHistory;
     private final ActivityService activity;
+    private final ProgressSnapshotService snapshots;
 
     public MovementService(LearnerRepository learners, UserRepository users, BatchRepository batches,
                            BundleRepository bundles, ChapterRepository chapters,
                            ProgressRepository progress, LearnerMoveRepository moves,
                            MentorAssignmentRepository mentorHistory,
-                           ActivityService activity) {
+                           ActivityService activity, ProgressSnapshotService snapshots) {
         this.learners = learners; this.users = users; this.batches = batches;
         this.bundles = bundles; this.chapters = chapters; this.progress = progress;
         this.moves = moves; this.mentorHistory = mentorHistory; this.activity = activity;
+        this.snapshots = snapshots;
     }
 
     private Learner require(String learnerId) {
@@ -96,6 +98,8 @@ public class MovementService {
             applyBatch(l, b);
         }
         learners.save(l);
+        /* the batch rank reads the row's batch and its snapshot together; keep both current */
+        snapshots.refresh(l);
         record(learnerId, "TRACK", from.name(), to.name(), reason, actorEmail);
         return l;
     }
@@ -115,6 +119,7 @@ public class MovementService {
         l.setTrackType(Learner.TrackType.BATCH);
         applyBatch(l, b);
         learners.save(l);
+        snapshots.refresh(l);
         record(learnerId, "BATCH", from, b.getCode(), reason, actorEmail);
         return l;
     }
@@ -141,6 +146,9 @@ public class MovementService {
             mentorHistory.save(h);
             l.setMentorId(b.getMentorId());
         }
+        /* the gates are onboarding. A learner already through it moving cohort keeps
+           them; resetting would send somebody mid course back to the induction */
+        if (l.gatesCleared()) return;
         if (b.isInductionDone()) {
             // the recording is the gate, so a mid batch joiner is never a second live session
             l.setInductionWatched(false);
@@ -196,6 +204,8 @@ public class MovementService {
 
         l.setBundleId(bundleId);
         learners.save(l);
+        /* a different course is a different denominator: the percentage is recomputed now */
+        snapshots.refresh(l);
         record(learnerId, "BUNDLE", from == null ? "none" : from.getName(), to.getName(),
                 reason, actorEmail);
 
@@ -215,9 +225,12 @@ public class MovementService {
     public Learner hold(String learnerId, String reason, String actorEmail) {
         Learner l = require(learnerId);
         need(reason);
+        /* holding somebody already on hold updates the reason; the date they went on
+           hold stays, or a second click would hide how long they have been away */
+        boolean already = l.isOnHold() && l.getHoldSince() != null;
         l.setOnHold(true);
         l.setHoldReason(reason);
-        l.setHoldSince(LocalDate.now());
+        if (!already) l.setHoldSince(LocalDate.now());
         learners.save(l);
         record(learnerId, "HOLD", "active", "on hold", reason, actorEmail);
         return l;

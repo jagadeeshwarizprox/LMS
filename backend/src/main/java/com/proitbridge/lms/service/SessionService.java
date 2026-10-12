@@ -6,6 +6,10 @@ import com.proitbridge.lms.domain.User;
 import com.proitbridge.lms.repo.ActiveSessionRepository;
 import com.proitbridge.lms.repo.DeviceRegistrationRepository;
 import com.proitbridge.lms.repo.UserRepository;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -28,13 +32,30 @@ public class SessionService {
     private final UserRepository users;
     private final ActivityService activity;
     private final SettingsService settings;
+    private final MongoTemplate mongo;
 
     public SessionService(ActiveSessionRepository sessions, DeviceRegistrationRepository devices,
                           UserRepository users, ActivityService activity,
-                          SettingsService settings) {
+                          SettingsService settings, MongoTemplate mongo) {
         this.sessions = sessions; this.devices = devices; this.users = users;
-        this.activity = activity; this.settings = settings;
+        this.activity = activity; this.settings = settings; this.mongo = mongo;
     }
+
+    /*
+     * How stale lastSeenAt may get before a request refreshes it. The stamp only feeds the
+     * idle cut-off, which is measured in tens of minutes, so writing it on every request
+     * (the load test's 1,000 learners turned every page view into a database write) bought
+     * nothing. A minute of slack is invisible next to a two hour idle window.
+     */
+    private static final long TOUCH_EVERY_SECONDS = 60;
+
+    /*
+     * The idle window is read on every authenticated request. It is a setting, so it can
+     * change, but not from one millisecond to the next: holding it for a minute takes a
+     * settings read off every request and a change still lands within the minute.
+     */
+    private volatile int idleCache = -1;
+    private volatile long idleReadAt = 0;
 
     /*
      * The limits are read on every sign in rather than held in a field, so a change made
@@ -50,7 +71,14 @@ public class SessionService {
                 : settings.getInt("access.deviceLimit.staff", 10);
     }
 
-    private int idleMinutes() { return settings.getInt("access.idleMinutes", 120); }
+    private int idleMinutes() {
+        long now = System.currentTimeMillis();
+        if (idleCache < 0 || now - idleReadAt > TOUCH_EVERY_SECONDS * 1000) {
+            idleCache = settings.getInt("access.idleMinutes", 120);
+            idleReadAt = now;
+        }
+        return idleCache;
+    }
 
     /** A device nobody has signed in from for this long stops holding a slot. */
     private int forgetDays() { return settings.getInt("access.deviceForgetDays", 30); }
@@ -158,20 +186,34 @@ public class SessionService {
         devices.save(d);
     }
 
-    /** Every authenticated request passes through here, so a dropped session dies at once. */
+    /**
+     * Every authenticated request passes through here, so a dropped session dies at once.
+     *
+     * The read is by primary key (the sid is the row id). The write only happens when the
+     * stamp is more than a minute old, and then it is a single-field $set rather than a
+     * whole-document save, so two concurrent requests on one session cannot overwrite a
+     * sign out that landed between their read and their write: the filter requires the
+     * row to still be current.
+     */
     public boolean isLive(String sessionId) {
         if (sessionId == null) return false;
         return sessions.findById(sessionId).map(s -> {
             if (!s.isCurrent()) return false;
-            if (users.findById(s.getUserId()).map(User::isSuspended).orElse(true)) return false;
-            if (ChronoUnit.MINUTES.between(s.getLastSeenAt(), Instant.now()) > idleMinutes()) {
-                s.setCurrent(false);
-                s.setEndedReason("IDLE");
-                sessions.save(s);
+            /* a switched-off account is treated like a suspended one: whatever session it
+               still holds stops working on its next request */
+            if (users.findById(s.getUserId()).map(u -> u.isSuspended() || !u.isActive())
+                    .orElse(true)) return false;
+            Instant now = Instant.now();
+            Instant seen = s.getLastSeenAt() == null ? s.getStartedAt() : s.getLastSeenAt();
+            if (seen != null && ChronoUnit.MINUTES.between(seen, now) > idleMinutes()) {
+                mongo.updateFirst(Query.query(Criteria.where("_id").is(s.getId()).and("current").is(true)),
+                        new Update().set("current", false).set("endedReason", "IDLE"), ActiveSession.class);
                 return false;
             }
-            s.setLastSeenAt(Instant.now());
-            sessions.save(s);
+            if (seen == null || ChronoUnit.SECONDS.between(seen, now) >= TOUCH_EVERY_SECONDS) {
+                mongo.updateFirst(Query.query(Criteria.where("_id").is(s.getId()).and("current").is(true)),
+                        Update.update("lastSeenAt", now), ActiveSession.class);
+            }
             return true;
         }).orElse(false);
     }

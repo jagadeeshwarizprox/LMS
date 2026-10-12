@@ -519,7 +519,7 @@ a.asset b, a.asset span { text-decoration: none; }
 .who-cell a:hover { color: var(--blue-500); text-decoration: underline; }
 
 /* ---------- people cells ---------- */
-.row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
+.row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
 .row-actions .btn { padding: 5px 10px; font-size: .76rem; }
 @media (max-width: 1200px) { .row-actions { flex-wrap: wrap; } }
 

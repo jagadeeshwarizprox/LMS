@@ -2,11 +2,24 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
 import java.time.Instant;
 import java.util.*;
 
 /** Anyone who can sign in. Premium vs Batch is NOT a role, it lives on Learner. */
+/*
+ * Indexes for twenty thousand learners and their logs.
+ *
+ * Staff lists, the mentor picker and the reporting tree read users by role and by
+ * reportsToId; without these each of those reads walked all twenty thousand learner
+ * accounts to find a few dozen staff.
+ */
+@CompoundIndexes({
+    @CompoundIndex(name = "role_active", def = "{'role': 1, 'active': 1}"),
+    @CompoundIndex(name = "reports_to", def = "{'reportsToId': 1}")
+})
 @Document("users")
 public class User {
     @Id private String id;

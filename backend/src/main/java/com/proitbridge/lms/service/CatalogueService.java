@@ -3,6 +3,11 @@ package com.proitbridge.lms.service;
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
 import com.proitbridge.lms.service.video.VideoRefs;
+import org.bson.Document;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.aggregation.Aggregation;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -41,6 +46,14 @@ public class CatalogueService {
     private final FormSectionRepository formSections;
     private final FormFieldRepository formFields;
     private final IntakeFormRepository intakeForms;
+    private final ProgressSnapshotService snapshots;
+    /*
+     * Counts and existence checks against progress, learners and intake forms. Those
+     * three grow with the register (progress is a row per learner per chapter, so
+     * hundreds of thousands), and every check here used to load the whole collection to
+     * ask a question one indexed count or one exists answers.
+     */
+    private final MongoTemplate mongo;
 
     public CatalogueService(ModuleRepository modules, ChapterRepository chapters,
                             TopicRepository topics,
@@ -50,7 +63,9 @@ public class CatalogueService {
                             CommunityLinkRepository communityLinks, JobPostRepository jobs,
                             CaseStudyRepository caseStudies, ActivityService activity,
                             ResourceService resourceService, FormSectionRepository formSections,
-                            FormFieldRepository formFields, IntakeFormRepository intakeForms) {
+                            FormFieldRepository formFields, IntakeFormRepository intakeForms,
+                            ProgressSnapshotService snapshots, MongoTemplate mongo) {
+        this.mongo = mongo;
         this.modules = modules; this.chapters = chapters; this.topics = topics;
         this.bundles = bundles;
         this.questions = questions; this.videos = videos; this.progress = progress;
@@ -58,6 +73,22 @@ public class CatalogueService {
         this.jobs = jobs; this.caseStudies = caseStudies; this.activity = activity;
         this.resourceService = resourceService; this.formSections = formSections;
         this.formFields = formFields; this.intakeForms = intakeForms;
+        this.snapshots = snapshots;
+    }
+
+    /*
+     * Learner snapshots and the catalogue.
+     *
+     * A learner's percentage is topics watched over the topics in their course, and the
+     * snapshot also carries the chapter count, so anything here that adds or removes a
+     * topic or a chapter, or changes which modules a course holds or whether it is
+     * published, changes the numbers of everyone on the affected courses. Those learners
+     * are marked stale in one update and recomputed in the background; nothing here waits
+     * on thousands of recomputations. Renames, reorders, tests and briefs move no number
+     * and mark nothing.
+     */
+    private void courseShapeChanged(String moduleId) {
+        snapshots.markModuleStale(moduleId);
     }
 
     /* ================================================================== modules */
@@ -66,21 +97,38 @@ public class CatalogueService {
         if (body.getName() == null || body.getName().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "A module needs a name.");
         }
-        if (body.getSlug() == null || body.getSlug().isBlank()) {
-            body.setSlug(body.getName().toLowerCase().replaceAll("[^a-z0-9]+", "-"));
-        }
-        if (body.getId() == null) {
+        boolean isNew = body.getId() == null;
+        CourseModule target;
+        if (isNew) {
+            target = body;
+            if (target.getSlug() == null || target.getSlug().isBlank()) {
+                target.setSlug(target.getName().toLowerCase().replaceAll("[^a-z0-9]+", "-"));
+            }
             List<CourseModule> all = modules.findAllByOrderByPositionAsc();
-            body.setPosition(all.size());
-            if (body.getCode() == null || body.getCode().isBlank()) {
-                body.setCode(nextModuleCode(all));
+            target.setPosition(all.size());
+            if (target.getCode() == null || target.getCode().isBlank()) {
+                target.setCode(nextModuleCode(all));
             }
             /* a module starts as a draft. It used to be on the roadmap of every learner
                whose course contained it from the second it was named. */
-            body.setPublished(false);
+            target.setPublished(false);
+            target.setActive(true);
+        } else {
+            /*
+             * An edit changes the words and nothing else. The posted object used to be
+             * saved whole, and since published, active and position are primitives a
+             * rename from a form that does not carry them released or un-released the
+             * module, un-archived it and moved it to the top of the list.
+             */
+            target = modules.findById(body.getId()).orElseThrow(() ->
+                    new ResponseStatusException(HttpStatus.NOT_FOUND, "No such module."));
+            target.setName(body.getName());
+            if (body.getCode() != null && !body.getCode().isBlank()) target.setCode(body.getCode());
+            if (body.getDescription() != null) target.setDescription(body.getDescription());
+            if (body.getSlug() != null && !body.getSlug().isBlank()) target.setSlug(body.getSlug());
         }
-        CourseModule saved = modules.save(body);
-        activity.log(null, actorEmail, body.getId() == null ? "CREATE_MODULE" : "UPDATE_MODULE",
+        CourseModule saved = modules.save(target);
+        activity.log(null, actorEmail, isNew ? "CREATE_MODULE" : "UPDATE_MODULE",
                 "module", saved.getName());
         return saved;
     }
@@ -103,9 +151,8 @@ public class CatalogueService {
     public Map<String, Object> deleteModule(String id, String actorEmail) {
         CourseModule t = modules.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such module."));
-        long studied = progress.findAll().stream()
-                .filter(p -> id.equals(p.getModuleId())).count();
-        boolean inUse = bundles.findAll().stream().anyMatch(b -> b.getModuleIds().contains(id));
+        long studied = mongo.count(new Query(Criteria.where("moduleId").is(id)), Progress.class);
+        boolean inUse = mongo.exists(new Query(Criteria.where("moduleIds").is(id)), Bundle.class);
 
         if (studied > 0 || inUse) {
             t.setActive(false);
@@ -118,7 +165,7 @@ public class CatalogueService {
         }
         for (Chapter c : chapters.findByModuleIdOrderByPositionAsc(id)) {
             questions.findByChapterId(c.getId()).forEach(questions::delete);
-            topics.findByChapterIdOrderByPositionAsc(c.getId()).forEach(topics::delete);
+            for (Topic tp : topics.findByChapterIdOrderByPositionAsc(c.getId())) removeTopicFully(tp, actorEmail);
             chapters.delete(c);
         }
         modules.delete(t);
@@ -178,7 +225,20 @@ public class CatalogueService {
         }
         c.setPublished(on);
         Chapter saved = chapters.save(c);
+        courseShapeChanged(saved.getModuleId());
         activity.log(null, actorEmail, on ? "PUBLISH_CHAPTER" : "UNPUBLISH_CHAPTER",
+                "chapter", saved.getTitle());
+        return saved;
+    }
+
+    /** Whether a chapter shows on the roadmap at all. Separate from release. */
+    public Chapter setChapterActive(String chapterId, boolean on, String actorEmail) {
+        Chapter c = chapters.findById(chapterId).orElseThrow(() ->
+                new ResponseStatusException(HttpStatus.NOT_FOUND, "No such chapter."));
+        c.setActive(on);
+        Chapter saved = chapters.save(c);
+        courseShapeChanged(saved.getModuleId());
+        activity.log(null, actorEmail, on ? "SHOW_CHAPTER" : "HIDE_CHAPTER",
                 "chapter", saved.getTitle());
         return saved;
     }
@@ -213,6 +273,7 @@ public class CatalogueService {
                     new ResponseStatusException(HttpStatus.NOT_FOUND, "No such chapter."));
 
         boolean isNew = c.getId() == null;
+        String fromModule = c.getModuleId();
         /* same as the module: written first, released second */
         if (isNew) c.setPublished(false);
         c.setModuleId(in.moduleId());
@@ -226,6 +287,11 @@ public class CatalogueService {
         }
 
         Chapter saved = chapters.save(c);
+        /* a new chapter, or one moved between modules, changes the chapter count */
+        if (isNew || !Objects.equals(fromModule, saved.getModuleId())) {
+            courseShapeChanged(saved.getModuleId());
+            if (fromModule != null && !fromModule.equals(saved.getModuleId())) courseShapeChanged(fromModule);
+        }
         activity.log(null, actorEmail, isNew ? "CREATE_CHAPTER" : "UPDATE_CHAPTER",
                 "chapter", saved.getTitle());
         return saved;
@@ -296,21 +362,16 @@ public class CatalogueService {
      */
     public Map<String, Object> deleteChapter(String id, String actorEmail) {
         Chapter c = chapter(id);
-        long studied = progress.findAll().stream()
-                .filter(p -> id.equals(p.getChapterId())).count();
+        long studied = mongo.count(new Query(Criteria.where("chapterId").is(id)), Progress.class);
         if (studied > 0) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     studied + " learners have progress on this chapter. Rename or reorder it, "
                     + "but deleting it would rewrite their record.");
         }
         questions.findByChapterId(id).forEach(questions::delete);
-        for (Topic t : topics.findByChapterIdOrderByPositionAsc(id)) {
-            if (t.getVideoRef() != null) {
-                videos.findById(t.getVideoRef()).ifPresent(v -> { v.setActive(false); videos.save(v); });
-            }
-            topics.delete(t);
-        }
+        for (Topic t : topics.findByChapterIdOrderByPositionAsc(id)) removeTopicFully(t, actorEmail);
         chapters.delete(c);
+        courseShapeChanged(c.getModuleId());
         activity.log(null, actorEmail, "DELETE_CHAPTER", "chapter", c.getTitle());
         return Map.of("deleted", true);
     }
@@ -352,6 +413,8 @@ public class CatalogueService {
                     new ResponseStatusException(HttpStatus.NOT_FOUND, "No such topic."));
 
         boolean isNew = t.getId() == null;
+        String fromModule = t.getModuleId();
+        boolean moved = !isNew && !Objects.equals(t.getChapterId(), parent.getId());
         t.setChapterId(parent.getId());
         t.setModuleId(parent.getModuleId());
         t.setTitle(in.title());
@@ -371,6 +434,11 @@ public class CatalogueService {
         }
 
         Topic saved = topics.save(t);
+        /* a new topic, or one moved to another chapter, moves the denominator */
+        if (isNew || moved) {
+            courseShapeChanged(saved.getModuleId());
+            if (moved && fromModule != null && !fromModule.equals(saved.getModuleId())) courseShapeChanged(fromModule);
+        }
         activity.log(null, actorEmail, isNew ? "CREATE_TOPIC" : "UPDATE_TOPIC",
                 "topic", saved.getTitle());
         return saved;
@@ -404,22 +472,41 @@ public class CatalogueService {
     public Map<String, Object> deleteTopic(String id, String actorEmail) {
         Topic t = topics.findById(id).orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.NOT_FOUND, "No such topic."));
-        long watched = progress.findAll().stream()
-                .filter(p -> p.getWatchedTopicIds().contains(id)).count();
+        /* array contains: matches any progress row whose watchedTopicIds holds this id */
+        long watched = mongo.count(new Query(Criteria.where("watchedTopicIds").is(id)), Progress.class);
         if (watched > 0) {
             t.setActive(false);
             topics.save(t);
+            courseShapeChanged(moduleOf(t));
             activity.log(null, actorEmail, "ARCHIVE_TOPIC", "topic", t.getTitle());
             return Map.of("archived", true,
                     "reason", watched + " learners have watched this topic, so it is archived rather than deleted");
         }
+        removeTopicFully(t, actorEmail);
+        courseShapeChanged(moduleOf(t));
+        activity.log(null, actorEmail, "DELETE_TOPIC", "topic", t.getTitle());
+        return Map.of("archived", false, "reason", "Deleted, nobody had watched it");
+    }
+
+    /**
+     * The one way a topic leaves the catalogue: its files go, its video record is
+     * switched off, then the row itself. Deleting a chapter or a module used to drop the
+     * topic rows and leave their uploaded files and live video records behind with
+     * nothing pointing at them.
+     */
+    /** A topic carries its module; an old row that does not is found through its chapter. */
+    private String moduleOf(Topic t) {
+        if (t.getModuleId() != null) return t.getModuleId();
+        return t.getChapterId() == null ? null
+                : chapters.findById(t.getChapterId()).map(Chapter::getModuleId).orElse(null);
+    }
+
+    private void removeTopicFully(Topic t, String actorEmail) {
         resourceService.deleteAllFor(t.getId(), actorEmail);
         if (t.getVideoRef() != null) {
             videos.findById(t.getVideoRef()).ifPresent(v -> { v.setActive(false); videos.save(v); });
         }
         topics.delete(t);
-        activity.log(null, actorEmail, "DELETE_TOPIC", "topic", t.getTitle());
-        return Map.of("archived", false, "reason", "Deleted, nobody had watched it");
     }
 
     public List<Topic> reorderTopics(String chapterId, List<String> orderedIds, String actorEmail) {
@@ -465,6 +552,9 @@ public class CatalogueService {
             Chapter c = new Chapter();
             c.setModuleId(moduleId);
             c.setTitle(line.title());
+            /* pasted outlines are drafts like any other new chapter: released one by one
+               once there is something in them */
+            c.setPublished(false);
             c.setPosition(++position);
             c.getAssignment().setTitle(line.title() + " assignment");
             c.getAssignment().setBrief("Apply what this chapter covered and submit your work.");
@@ -473,6 +563,7 @@ public class CatalogueService {
             already.add(line.title().toLowerCase());
             added.add(line.title());
         }
+        if (!added.isEmpty()) courseShapeChanged(moduleId);
         activity.log(null, actorEmail, "BULK_ADD_CHAPTERS", "module",
                 added.size() + " added, " + skipped.size() + " already there");
         return Map.of("added", added.size(), "skipped", skipped.size(), "skippedTitles", skipped);
@@ -499,6 +590,7 @@ public class CatalogueService {
             already.add(line.title().toLowerCase());
             added.add(line.title());
         }
+        if (!added.isEmpty()) courseShapeChanged(parent.getModuleId());
         activity.log(null, actorEmail, "BULK_ADD_TOPICS", "chapter",
                 added.size() + " added, " + skipped.size() + " already there");
         return Map.of("added", added.size(), "skipped", skipped.size(), "skippedTitles", skipped);
@@ -536,8 +628,25 @@ public class CatalogueService {
     /* =============================================================== questions */
 
     public QuizQuestion saveQuestion(QuizQuestion body, String actorEmail) {
+        validateQuestion(body);
+        body.setDraft(false);            // written or reviewed by a person, so it is not a draft
+        QuizQuestion saved = questions.save(body);
+        activity.log(null, actorEmail, "SAVE_QUESTION", "chapter", body.getChapterId());
+        return saved;
+    }
+
+    /** The bar a question meets before a learner sees it, typed by hand or published from a draft. */
+    public static void validateQuestion(QuizQuestion body) {
         if (body.getChapterId() == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Which chapter is this question for?");
+        }
+        if (body.getPrompt() == null || body.getPrompt().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Write the question itself.");
+        }
+        if (body.getOptions() == null || body.getOptions().stream()
+                .anyMatch(o -> o == null || o.isBlank())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Every option needs some text. Remove the blank ones.");
         }
         if (body.getOptions() == null || body.getOptions().size() < 2) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "A question needs at least two options.");
@@ -554,10 +663,6 @@ public class CatalogueService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "Say why the right answer is right. The learner sees it after they answer.");
         }
-        body.setDraft(false);            // written or reviewed by a person, so it is not a draft
-        QuizQuestion saved = questions.save(body);
-        activity.log(null, actorEmail, "SAVE_QUESTION", "chapter", body.getChapterId());
-        return saved;
     }
 
     public void deleteQuestion(String id, String actorEmail) {
@@ -602,7 +707,10 @@ public class CatalogueService {
 
         if (target.getModuleIds() == null) target.setModuleIds(new ArrayList<>());
         if (target.getAccess() == null) target.setAccess(new Bundle.Access());
+        if (target.getColor() == null || target.getColor().isBlank()) target.setColor(Bundle.DEFAULT_COLOR);
         Bundle saved = bundles.save(target);
+        /* an edit may have changed the module list; nobody is on a course just created */
+        if (!isNew && body.getModuleIds() != null) snapshots.markBundleStale(saved.getId());
         activity.log(null, actorEmail, isNew ? "CREATE_BUNDLE" : "UPDATE_BUNDLE",
                 "bundle", saved.getName());
         return saved;
@@ -617,16 +725,9 @@ public class CatalogueService {
         }
         b.setModuleIds(clean);
         Bundle saved = bundles.save(b);
+        snapshots.markBundleStale(saved.getId());
         activity.log(null, actorEmail, "SET_BUNDLE_MODULES", "bundle",
                 b.getName() + ", " + clean.size() + " modules");
-        return saved;
-    }
-
-    public Bundle setBundleAccess(String id, Bundle.Access access, String actorEmail) {
-        Bundle b = bundle(id);
-        b.setAccess(access == null ? new Bundle.Access() : access);
-        Bundle saved = bundles.save(b);
-        activity.log(null, actorEmail, "SET_BUNDLE_ACCESS", "bundle", b.getName());
         return saved;
     }
 
@@ -658,6 +759,8 @@ public class CatalogueService {
         }
         b.setPublished(publish);
         bundles.save(b);
+        /* an unpublished course has no denominator, so publishing either way moves everyone on it */
+        snapshots.markBundleStale(b.getId());
         activity.log(null, actorEmail, publish ? "PUBLISH_BUNDLE" : "UNPUBLISH_BUNDLE",
                 "bundle", b.getName());
         return Map.of("published", publish);
@@ -670,7 +773,7 @@ public class CatalogueService {
 
     public Map<String, Object> deleteBundle(String id, String actorEmail) {
         Bundle b = bundle(id);
-        long enrolled = learners.findAll().stream().filter(l -> id.equals(l.getBundleId())).count();
+        long enrolled = mongo.count(new Query(Criteria.where("bundleId").is(id)), Learner.class);
         if (enrolled > 0) {
             b.setActive(false);
             bundles.save(b);
@@ -772,12 +875,17 @@ public class CatalogueService {
     }
 
     public Map<String, Object> tree() {
-        List<Progress> allProgress = progress.findAll();
-        List<Learner> allLearners = learners.findAll();
+        /*
+         * Two $group reads instead of loading every progress row and every learner: how
+         * many progress rows each chapter has, and how many learners each course has.
+         * Both come back as one small document per chapter or course.
+         */
+        Map<String, Long> studiedByChapter = countBy("chapterId", Progress.class);
+        Map<String, Long> learnersByBundle = countBy("bundleId", Learner.class);
 
         List<Map<String, Object>> moduleRows = modules.findAllByOrderByPositionAsc().stream().map(m -> {
             List<Map<String, Object>> chapterRows = chapters.findByModuleIdOrderByPositionAsc(m.getId())
-                    .stream().map(c -> chapterRow(c, allProgress)).collect(Collectors.toList());
+                    .stream().map(c -> chapterRow(c, studiedByChapter)).collect(Collectors.toList());
 
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("id", m.getId());
@@ -810,14 +918,13 @@ public class CatalogueService {
             row.put("description", b.getDescription());
             row.put("price", b.getPrice());
             row.put("tag", b.getTag());
-            row.put("color", b.getColor());
+            row.put("color", b.colorOrDefault());
             row.put("imageFileId", b.getImageFileId());
             row.put("published", b.isPublished());
             row.put("active", b.isActive());
             row.put("moduleIds", b.getModuleIds());
-            row.put("access", b.getAccess());
-            row.put("learners", allLearners.stream()
-                    .filter(l -> b.getId().equals(l.getBundleId())).count());
+            row.put("access", b.accessOrDefault());
+            row.put("learners", learnersByBundle.getOrDefault(b.getId(), 0L));
             row.put("readiness", readiness(b));
             return row;
         }).collect(Collectors.toList());
@@ -829,7 +936,19 @@ public class CatalogueService {
         return out;
     }
 
-    private Map<String, Object> chapterRow(Chapter c, List<Progress> allProgress) {
+    /** Documents per value of one field, from a single $group. */
+    private Map<String, Long> countBy(String field, Class<?> entity) {
+        Map<String, Long> out = new HashMap<>();
+        for (Document d : mongo.aggregate(Aggregation.newAggregation(
+                Aggregation.group(field).count().as("n")), entity, Document.class).getMappedResults()) {
+            Object id = d.get("_id");
+            Object n = d.get("n");
+            if (id != null && n instanceof Number num) out.put(String.valueOf(id), num.longValue());
+        }
+        return out;
+    }
+
+    private Map<String, Object> chapterRow(Chapter c, Map<String, Long> studiedByChapter) {
         List<Map<String, Object>> topicRows = topics.findByChapterIdOrderByPositionAsc(c.getId())
                 .stream().map(t -> {
                     Video v = t.getVideoRef() == null ? null
@@ -864,9 +983,13 @@ public class CatalogueService {
         row.put("test", c.getTest());
         row.put("assignment", c.getAssignment());
         row.put("teachback", c.getTeachback());
-        row.put("questions", questions.findByChapterId(c.getId()).size());
+        /* drafts from the model are never served, so they are not questions yet */
+        row.put("questions", questions.findByChapterId(c.getId()).stream()
+                .filter(q -> !q.isDraft()).count());
+        row.put("draftQuestions", questions.findByChapterId(c.getId()).stream()
+                .filter(QuizQuestion::isDraft).count());
         row.put("hasAssignment", c.getAssignment().isEnabled());
-        row.put("studied", allProgress.stream().filter(p -> c.getId().equals(p.getChapterId())).count());
+        row.put("studied", studiedByChapter.getOrDefault(c.getId(), 0L));
         return row;
     }
 
@@ -879,7 +1002,6 @@ public class CatalogueService {
     public List<String> readiness(Bundle b) {
         List<String> gaps = new ArrayList<>();
         if (b.getModuleIds().isEmpty()) gaps.add("No modules in this course");
-        if (b.getPrice() <= 0) gaps.add("No price set");
         for (String mid : b.getModuleIds()) {
             CourseModule m = modules.findById(mid).orElse(null);
             if (m == null) continue;
@@ -896,7 +1018,8 @@ public class CatalogueService {
                                 + noVideo + " topic" + (noVideo > 1 ? "s" : "") + " with no video");
                     }
                 }
-                if (c.getTest().isEnabled() && questions.findByChapterId(c.getId()).isEmpty()) {
+                if (c.getTest().isEnabled() && questions.findByChapterId(c.getId()).stream()
+                        .allMatch(QuizQuestion::isDraft)) {
                     gaps.add(m.getName() + " \u203a " + c.getTitle() + ": test is on with no questions");
                 }
                 if (c.getAssignment().isEnabled()
@@ -935,7 +1058,7 @@ public class CatalogueService {
             int n = 2;
             while (formSections.findByKey(key).isPresent()) key = base + "_" + n++;
             body.setKey(key);
-            body.setPosition(formSections.findAll().size());
+            body.setPosition((int) formSections.count());
         } else {
             FormSection existing = formSections.findById(body.getId()).orElseThrow(() ->
                     new ResponseStatusException(HttpStatus.NOT_FOUND, "No such section."));
@@ -955,8 +1078,9 @@ public class CatalogueService {
     public Map<String, Object> deleteFormSection(String id, String actorEmail) {
         FormSection f = formSections.findById(id).orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.NOT_FOUND, "No such section."));
-        boolean answered = intakeForms.findAll().stream()
-                .anyMatch(x -> x.getCompletedSections().contains(f.getKey()));
+        /* one exists on the intake forms, not every learner's form loaded to check */
+        boolean answered = mongo.exists(
+                new Query(Criteria.where("completedSections").is(f.getKey())), IntakeForm.class);
         if (answered) {
             f.setActive(false);
             formSections.save(f);
@@ -1015,7 +1139,7 @@ public class CatalogueService {
             int n = 2;
             while (keyTaken(body.getSectionKey(), candidate)) candidate = key + n++;
             body.setKey(candidate);
-            body.setPosition(formFields.findAll().size());
+            body.setPosition((int) formFields.count());
         } else {
             FormField existing = formFields.findById(body.getId()).orElseThrow(() ->
                     new ResponseStatusException(HttpStatus.NOT_FOUND, "No such question."));
@@ -1042,12 +1166,10 @@ public class CatalogueService {
     public Map<String, Object> deleteFormField(String id, String actorEmail) {
         FormField f = formFields.findById(id).orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.NOT_FOUND, "No such question."));
-        boolean answered = intakeForms.findAll().stream().anyMatch(x -> {
-            Object sec = x.getSections().get(f.getSectionKey());
-            return sec instanceof Map<?, ?> m
-                    && m.get(f.getKey()) != null
-                    && !String.valueOf(m.get(f.getKey())).isBlank();
-        });
+        /* answered means a stored value that is not blank: present, not null, not "" */
+        boolean answered = mongo.exists(new Query(
+                Criteria.where("sections." + f.getSectionKey() + "." + f.getKey())
+                        .exists(true).nin(null, "")), IntakeForm.class);
         if (answered) {
             f.setActive(false);
             formFields.save(f);

@@ -36,9 +36,6 @@ public class SettingsService {
 
     /** Everything editable, with what it means, so the screen needs no hard-coded list. */
     public static final List<Map<String, String>> DEFINITIONS = List.of(
-        Map.of("key", "org.name", "label", "Organisation name", "type", "text",
-               "group", "Brand", "default", "ProITBridge",
-               "note", "Shown in mail and on the sign in screen."),
         Map.of("key", "org.supportEmail", "label", "Support email", "type", "text",
                "group", "Brand", "default", "",
                "note", "Where learners are told to write when nothing else fits. "
@@ -66,33 +63,6 @@ public class SettingsService {
         Map.of("key", "onboarding.prereqTitle", "label", "Prerequisite video title", "type", "text",
                "group", "Onboarding", "default", "How this LMS works",
                "note", "What the learner sees above the player."),
-        Map.of("key", "onboarding.overdueDays", "label", "Onboarding overdue after", "type", "number",
-               "group", "Onboarding", "default", "7",
-               "note", "Days in onboarding before the board flags someone to call."),
-        Map.of("key", "risk.noLoginDays", "label", "At risk after no sign in", "type", "number",
-               "group", "Follow up", "default", "7",
-               "note", "Days without signing in before a learner is flagged."),
-        Map.of("key", "risk.quietWeekMinutes", "label", "Quiet week under", "type", "number",
-               "group", "Follow up", "default", "30",
-               "note", "Study minutes in a week below which a learner counts as quiet."),
-        Map.of("key", "batch.startDay", "label", "Batches start on", "type", "weekday",
-               "group", "Batches", "default", "2",
-               "note", "The Wednesday rule is derived from this day."),
-        Map.of("key", "batch.previousDayJoin", "label", "Join day that goes to the previous batch",
-               "type", "weekday", "group", "Batches", "default", "3",
-               "note", "Someone joining on this day joins the batch that has just started."),
-        Map.of("key", "video.watchedPercent", "label", "Counts as watched at", "type", "number",
-               "group", "Learning", "default", "95",
-               "note", "Percentage of a chapter video that marks it watched."),
-        Map.of("key", "quiz.passScore", "label", "Test pass mark", "type", "number",
-               "group", "Learning", "default", "60",
-               "note", "Below this a learner is told to try the chapter again."),
-        Map.of("key", "session.openBeforeMinutes", "label", "Join opens before", "type", "number",
-               "group", "Sessions", "default", "10",
-               "note", "Minutes before a session that the join button goes live."),
-        Map.of("key", "session.openAfterMinutes", "label", "Join closes after", "type", "number",
-               "group", "Sessions", "default", "15",
-               "note", "Minutes after a session ends that the link stops working."),
         Map.of("key", "access.deviceLimit.learner", "label", "Devices per learner", "type", "number",
                "group", "Access", "default", "3",
                "note", "How many different devices one learner account may be used from. "
@@ -128,6 +98,16 @@ public class SettingsService {
                      + "see the week and take what they are given. Either way every mentor sees "
                      + "the whole week, and only an admin releases it to learners.")
     );
+
+    /**
+     * Settings that were listed here and never read by anything: the screen offered
+     * them, an admin changed them, and nothing behaved differently. Removed from the
+     * list, and from a database that already holds a value for them, on start.
+     */
+    public static final List<String> RETIRED = List.of(
+        "org.name", "onboarding.overdueDays", "risk.noLoginDays", "risk.quietWeekMinutes",
+        "batch.startDay", "batch.previousDayJoin", "video.watchedPercent", "quiz.passScore",
+        "session.openBeforeMinutes", "session.openAfterMinutes");
 
     public String get(String key, String fallback) {
         return settings.findByKey(key)
@@ -187,7 +167,7 @@ public class SettingsService {
     /**
      * Push the onboarding flag out to where a document can read it.
      *
-     * Called on save and once at startup. Anything else that writes app settings directly
+     * Called on save, on reset and once at startup. Anything else that writes app settings directly
      * would miss this, which is the cost of caching it; nothing else does today.
      */
     @EventListener(ApplicationReadyEvent.class)
@@ -199,6 +179,8 @@ public class SettingsService {
     public Map<String, Object> reset(String key, String actorEmail) {
         settings.findByKey(key).ifPresent(settings::delete);
         activity.log(null, actorEmail, "RESET_SETTING", "settings", key);
+        /* resetting the onboarding switch has to reach the cached gate as saving does */
+        refreshGatePolicy();
         return Map.of("reset", true);
     }
 

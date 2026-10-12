@@ -2,6 +2,11 @@ package com.proitbridge.lms.service;
 
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.aggregation.Aggregation;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -13,6 +18,8 @@ import java.util.stream.Collectors;
 
 @Service
 public class LearnerService {
+
+    private final MongoTemplate mongo;
 
     private final UserRepository users;
     private final LearnerRepository learners;
@@ -49,6 +56,7 @@ public class LearnerService {
     private final FormSectionRepository formSections;
     private final FormFieldRepository formFields;
     private final FileService fileService;
+    private final ProgressSnapshotService snapshots;
 
     public LearnerService(UserRepository users, LearnerRepository learners, BatchRepository batches,
                           BundleRepository bundles, ModuleRepository modules, ChapterRepository chapters,
@@ -66,7 +74,9 @@ public class LearnerService {
                           ResourceService resourceService, RecordingService recordingService,
                           WatchService watch, FormSectionRepository formSections,
                           FormFieldRepository formFields, FileService fileService,
-                          AssignmentService tasks) {
+                          AssignmentService tasks, ProgressSnapshotService snapshots,
+                          MongoTemplate mongo) {
+        this.mongo = mongo;
         this.users = users; this.learners = learners; this.batches = batches; this.bundles = bundles;
         this.modules = modules; this.chapters = chapters; this.topics = topics;
         this.progress = progress;
@@ -83,6 +93,7 @@ public class LearnerService {
         this.formSections = formSections;
         this.formFields = formFields;
         this.fileService = fileService;
+        this.snapshots = snapshots;
     }
 
     public Learner require(String userId) {
@@ -324,60 +335,18 @@ public class LearnerService {
      * one of them is the learner's.
      */
     public Map<String, Object> stats(Learner l) {
-        List<Progress> ps = progress.findByLearnerId(l.getId());
-        Bundle bundle = publishedCourseFor(l);
-
-        List<Chapter> courseChapters = bundle == null ? List.of()
-                : chapters.findByModuleIdIn(bundle.getModuleIds());
-        long totalChapters = courseChapters.size();
-
-        Map<String, Long> topicsPerChapter = new LinkedHashMap<>();
-        if (!courseChapters.isEmpty()) {
-            Set<String> chapterIds = courseChapters.stream()
-                    .map(Chapter::getId).collect(Collectors.toSet());
-            for (Topic t : topics.findByChapterIdIn(chapterIds)) {
-                if (!t.isActive()) continue;
-                topicsPerChapter.merge(t.getChapterId(), 1L, Long::sum);
-            }
-        }
-        long totalTopics = topicsPerChapter.values().stream().mapToLong(Long::longValue).sum();
-
-        Map<String, Progress> progressByChapter = ps.stream()
-                .collect(Collectors.toMap(Progress::getChapterId, p -> p, (a, b) -> a));
-        long watchedTopics = 0;
-        for (var e : topicsPerChapter.entrySet()) {
-            Progress p = progressByChapter.get(e.getKey());
-            if (p == null || p.getWatchedTopicIds() == null) continue;
-            /* a topic archived after somebody watched it stays in their set, so the
-               count is capped at what the chapter still holds rather than going over */
-            watchedTopics += Math.min(e.getValue(), p.getWatchedTopicIds().size());
-        }
-
-        long watched = ps.stream().filter(Progress::isWatched).count();
-        double avgQuiz = ps.stream().filter(p -> p.getQuizScore() != null)
-                .mapToDouble(Progress::getQuizScore).average().orElse(0);
-        long tasksApproved = ps.stream().filter(p -> "APPROVED".equals(p.getTaskStatus())).count();
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("totalChapters", totalChapters);
-        m.put("watched", watched);
         /*
-         * Ints, deliberately.
+         * Read from the snapshot on the learner row, not recomputed.
          *
-         * Math.round(double) returns a long, so these two went into the map as Longs
-         * while every reader cast them to Integer. That is a ClassCastException, and it
-         * took out the whole mentor roster: one learner with any progress and the
-         * endpoint 500s, so a mentor saw none of their learners rather than some of them.
-         * The same cast sits behind the leaderboard and the rank card.
+         * This was four or five queries per call, and the batch page called it for every
+         * learner in the batch and on the course to print one rank. The computation, and
+         * everything said above about why topics are the unit, now lives in
+         * ProgressSnapshotService, which works it out when progress changes. The map is
+         * the same keys and the same number types as ever: percent and avgQuiz are ints
+         * (Math.round of a double is a long, and a Long cast to Integer once took out the
+         * whole mentor roster), counts are longs.
          */
-        m.put("totalTopics", totalTopics);
-        m.put("watchedTopics", watchedTopics);
-        m.put("hasCourse", bundle != null && totalTopics > 0);
-        m.put("percent", totalTopics == 0 ? 0
-                : (int) Math.round(watchedTopics * 100.0 / totalTopics));
-        m.put("avgQuiz", (int) Math.round(avgQuiz));
-        m.put("tasksApproved", tasksApproved);
-        m.put("projectsApproved", projects.countByLearnerIdAndStatus(l.getId(), "APPROVED"));
-        return m;
+        return snapshots.stats(l);
     }
 
     /* ---------------------------------------------------------------- onboarding */
@@ -397,6 +366,19 @@ public class LearnerService {
     public void markInductionWatched(String userId) {
         Learner l = require(userId);
         if (l.getTrackType() != Learner.TrackType.BATCH) return;
+        /*
+         * The induction has to have happened before anybody can have watched it.
+         *
+         * This used to set the flag, and clear the call gate with it, on a bare POST, so
+         * a learner whose batch had not been inducted yet could open their modules by
+         * calling the endpoint. The batch row is the record of the induction being held.
+         */
+        Batch b = l.getBatchId() == null || l.getBatchId().isBlank() ? null
+                : batches.findById(l.getBatchId()).orElse(null);
+        if (b == null || !b.isInductionDone()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Your batch induction has not been held yet. It opens once your mentor marks it done.");
+        }
         l.setInductionWatched(true);
         l.setGateCallDone(true);
         learners.save(l);
@@ -430,6 +412,30 @@ public class LearnerService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unknown form section: " + section);
         }
         IntakeForm f = intake(userId);
+        /*
+         * Required means required on the server too.
+         *
+         * The form only checked this in the browser, so a PUT with an empty body marked
+         * any section done and could clear the form gate with nothing filled in. Same
+         * rule as the page: active, not read only, shown for this profile type, and
+         * blank after trimming. A read only field is filled from the record, so it is
+         * never the learner's to supply here.
+         */
+        if (payload == null) payload = Map.of();
+        Object typeGiven = payload.get("profileType");
+        String profileType = typeGiven != null && !String.valueOf(typeGiven).isBlank()
+                ? String.valueOf(typeGiven) : f.getProfileType();
+        List<String> missing = new ArrayList<>();
+        for (FormField field : formFields.findBySectionKeyOrderByPositionAsc(section)) {
+            if (!field.isActive() || !field.isRequired() || field.isReadOnly()) continue;
+            List<String> when = field.getShowWhen();
+            if (when != null && !when.isEmpty() && (profileType == null || !when.contains(profileType))) continue;
+            if (blankAnswer(payload.get(field.getKey()))) missing.add(field.getLabel());
+        }
+        if (!missing.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Still needed: " + String.join(", ", missing.subList(0, Math.min(3, missing.size()))));
+        }
         f.getSections().put(section, payload);
         f.getCompletedSections().add(section);
         if ("professional".equals(section)) {
@@ -449,6 +455,19 @@ public class LearnerService {
             learners.save(l);
         }
         return intakeForms.save(f);
+    }
+
+    /**
+     * Whether an answer counts as not given. Mirrors the form's String(value).trim()
+     * check, so the server never refuses what the page let through: a list is empty when
+     * it has nothing in it, and anything else when it prints as blank.
+     */
+    private static boolean blankAnswer(Object v) {
+        if (v == null) return true;
+        if (v instanceof Collection<?> c) {
+            return c.stream().allMatch(x -> x == null || String.valueOf(x).isBlank());
+        }
+        return String.valueOf(v).isBlank();
     }
 
     /* ---------------------------------------------------------------- chapter flow */
@@ -486,6 +505,34 @@ public class LearnerService {
         }
         Bundle b = publishedCourseFor(l);
         return b != null && b.getModuleIds() != null && b.getModuleIds().contains(c.getModuleId());
+    }
+
+    /**
+     * The same refusal chapter() gives, for every write against a chapter.
+     *
+     * Opening a chapter was checked; submitting its test, its teach back, its task and
+     * asking its doubt block were not, so all four could be called for a chapter outside
+     * the learner's course, unpublished, or before onboarding was done.
+     */
+    private void requireOpenable(Learner l, String userId, String chapterId) {
+        if (!l.modulesUnlocked(inductionCounts(l))) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "Finish onboarding to open your modules.");
+        }
+        if (!canOpenChapter(userId, chapterId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Chapter not found.");
+        }
+    }
+
+    /** Every active topic before this one has to be done first, as topic() enforces. */
+    private void requireEarlierTopicsWatched(Chapter c, Progress p, String topicId) {
+        for (Topic sibling : topics.findByChapterIdOrderByPositionAsc(c.getId())) {
+            if (sibling.getId().equals(topicId)) break;
+            if (sibling.isActive() && !p.getWatchedTopicIds().contains(sibling.getId())) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Finish " + sibling.getTitle() + " first.");
+            }
+        }
     }
 
     public Map<String, Object> chapter(String userId, String chapterId) {
@@ -633,14 +680,7 @@ public class LearnerService {
         Chapter c = chapters.findById(t.getChapterId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Chapter not found."));
         Progress p = progressFor(l, c);
-
-        for (Topic sibling : topics.findByChapterIdOrderByPositionAsc(c.getId())) {
-            if (sibling.getId().equals(topicId)) break;
-            if (sibling.isActive() && !p.getWatchedTopicIds().contains(sibling.getId())) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Finish " + sibling.getTitle() + " first.");
-            }
-        }
+        requireEarlierTopicsWatched(c, p, topicId);
 
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("id", t.getId());
@@ -687,7 +727,43 @@ public class LearnerService {
                 new ResponseStatusException(HttpStatus.NOT_FOUND, "Topic not found."));
         Chapter c = chapters.findById(t.getChapterId()).orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.NOT_FOUND, "Chapter not found."));
+        /*
+         * Watched has to mean watched.
+         *
+         * This took the client's word for it: one POST per topic id marked it done, with
+         * no check that the chapter was the learner's, that the topics before it were
+         * finished, or that a second of the video had played. The chapter rules apply,
+         * the order topic() enforces applies, and the stored watch position has to show
+         * at least ninety percent of one of the topic's videos.
+         */
+        requireOpenable(l, userId, c.getId());
+        if (!t.isActive()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Topic not found.");
+        }
         Progress p = progressFor(l, c);
+        if (p.getWatchedTopicIds().contains(topicId)) return p;   // already done, nothing to check
+        requireEarlierTopicsWatched(c, p, topicId);
+
+        Set<String> refs = new LinkedHashSet<>();
+        if (t.getVideoRef() != null && !t.getVideoRef().isBlank()) refs.add(t.getVideoRef());
+        for (Map<String, Object> r : resourceService.viewFor(t.getId(), l.getTrackType().name(), true)) {
+            Object ref = r.get("videoRef");
+            if ("VIDEO".equals(r.get("kind")) && ref != null && !String.valueOf(ref).isBlank()) {
+                refs.add(String.valueOf(ref));
+            }
+        }
+        /* a topic with nothing to play has nothing to prove; it is notes or links only */
+        if (!refs.isEmpty()) {
+            int best = watch.bestPercent(l.getId(), refs);
+            if (best < 0) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "No playback has been recorded for this topic yet. Play the video to mark it watched.");
+            }
+            if (best < 90) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "This topic's video is " + best + "% watched. It counts once you reach 90%.");
+            }
+        }
         p.getWatchedTopicIds().add(topicId);
 
         List<Topic> ts = topics.findByChapterIdOrderByPositionAsc(c.getId()).stream()
@@ -695,7 +771,10 @@ public class LearnerService {
         p.setWatched(!ts.isEmpty() && ts.stream()
                 .allMatch(x -> p.getWatchedTopicIds().contains(x.getId())));
         p.setUpdatedAt(Instant.now());
-        return progress.save(p);
+        Progress saved = progress.save(p);
+        /* a topic more watched moves the percentage and the rank */
+        snapshots.refresh(l);
+        return saved;
     }
 
     /**
@@ -713,7 +792,9 @@ public class LearnerService {
      */
     public Map<String, Object> submitQuiz(String userId, String chapterId, Map<String, Integer> answers) {
         Learner l = require(userId);
-        Chapter c = chapters.findById(chapterId).orElseThrow();
+        Chapter c = chapters.findById(chapterId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Chapter not found."));
+        requireOpenable(l, userId, chapterId);
         List<QuizQuestion> qs = quizQuestions.findByChapterId(chapterId).stream()
                 .filter(q -> !q.isDraft()).toList();
         if (qs.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "This chapter has no test.");
@@ -765,6 +846,7 @@ public class LearnerService {
         if (p.getQuizScore() == null || score > p.getQuizScore()) p.setQuizScore(score);
         p.setUpdatedAt(Instant.now());
         progress.save(p);
+        snapshots.refresh(l);   // the test average
 
         boolean passed = score >= passMark;
         int left = passed ? 0 : Math.max(0, limit - attemptNo);
@@ -795,6 +877,8 @@ public class LearnerService {
             p.setQuizScore(null);
             p.setUpdatedAt(Instant.now());
             progress.save(p);
+            /* the cleared score no longer counts towards their test average */
+            snapshots.refresh(learnerId);
         });
         return Map.of("cleared", rows.size());
     }
@@ -807,7 +891,9 @@ public class LearnerService {
     public Map<String, Object> conceptCheck(String userId, String chapterId, String explanation) {
         Learner l = require(userId);
         featureService.require(l, "ai_teach_back", "Teach back is not part of your programme.");
-        Chapter c = chapters.findById(chapterId).orElseThrow();
+        Chapter c = chapters.findById(chapterId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Chapter not found."));
+        requireOpenable(l, userId, chapterId);
         String text = explanation == null ? "" : explanation.trim();
 
         Double score = null;
@@ -836,7 +922,11 @@ public class LearnerService {
 
         Progress p = progressFor(l, c);
         if (modelUsed) {
-            p.setConceptCheckScore(score);
+            /* the best graded attempt stands, the same rule as the test: a retake that
+               scores lower is fed back but does not take a mark away */
+            if (p.getConceptCheckScore() == null || score > p.getConceptCheckScore()) {
+                p.setConceptCheckScore(score);
+            }
             p.setConceptCheckPending(false);
         } else {
             /*
@@ -851,8 +941,11 @@ public class LearnerService {
              * The answer is kept and the chapter still opens on it, because a learner
              * should never be stuck mid chapter waiting on a server. It is simply held
              * ungraded until the model can read it, which is honest about what happened.
+             *
+             * A score already graded is left alone. Nulling it here meant one retry while
+             * the model was down wiped a real mark and the chapter's teach back fell back
+             * to pending; the new answer waits beside it instead.
              */
-            p.setConceptCheckScore(null);
             p.setConceptCheckPending(true);
             verdict = "Saved. The assistant could not be reached, so this is waiting to be "
                     + "read rather than scored. Your mentor can see it in the meantime.";
@@ -860,6 +953,8 @@ public class LearnerService {
         p.setConceptCheckAnswer(text);
         p.setUpdatedAt(Instant.now());
         progress.save(p);
+        /* no snapshot number is the teach back's, but it is activity, and lastActiveAt is */
+        snapshots.refresh(l);
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("score", score);
@@ -876,11 +971,9 @@ public class LearnerService {
      */
     public Map<String, Object> askDoubt(String userId, String chapterId, String question) {
         Learner l = require(userId);
-        Chapter c = chapters.findById(chapterId).orElseThrow();
-        if (!l.modulesUnlocked(inductionCounts(l))) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                    "Finish onboarding to open your modules.");
-        }
+        Chapter c = chapters.findById(chapterId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Chapter not found."));
+        requireOpenable(l, userId, chapterId);
         String module = moduleRepo.findById(c.getModuleId()).map(CourseModule::getName).orElse("");
         var answer = ai.complete(
                 "You help a learner with one chapter of a course. Answer only what relates to "
@@ -915,7 +1008,9 @@ public class LearnerService {
     public Assignment submitTask(String userId, String chapterId, String url,
                                  List<String> fileIds, String notes) {
         Learner l = require(userId);
-        Chapter c = chapters.findById(chapterId).orElseThrow();
+        Chapter c = chapters.findById(chapterId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Chapter not found."));
+        requireOpenable(l, userId, chapterId);
         if (!c.getAssignment().isEnabled()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "This chapter has no assignment.");
@@ -960,9 +1055,33 @@ public class LearnerService {
         Learner l = require(userId);
         boolean premium = l.getTrackType() == Learner.TrackType.PREMIUM;
         String scope = premium ? "PREMIUM" : "BATCH";
-        return slots.findByTrackScopeInAndOpenTrue(List.of(scope, "BOTH")).stream()
+        /*
+         * Future, open, published slots in their track, over the startsAt index. The open
+         * flag alone used to pull every open slot ever created, past ones included, and
+         * each row then looked up its mentor, its seat count and the learner's booking on
+         * its own. Those are now one read each for the whole list.
+         */
+        List<Slot> upcoming = mongo.find(Query.query(Criteria.where("startsAt").gt(Instant.now())
+                        .and("trackScope").in(List.of(scope, "BOTH"))
+                        .and("open").is(true).and("published").ne(false))
+                .with(Sort.by(Sort.Direction.ASC, "startsAt")), Slot.class);
+        Map<String, String> mentorNames = new HashMap<>();
+        users.findAllById(upcoming.stream().map(Slot::getMentorId).filter(Objects::nonNull)
+                .collect(Collectors.toSet())).forEach(u -> mentorNames.put(u.getId(), u.getFullName()));
+        Map<String, Long> taken = new HashMap<>();
+        if (!upcoming.isEmpty()) {
+            for (org.bson.Document d : mongo.aggregate(Aggregation.newAggregation(
+                            Aggregation.match(Criteria.where("slotId").in(upcoming.stream().map(Slot::getId).toList())),
+                            Aggregation.group("slotId").count().as("n")),
+                    Booking.class, org.bson.Document.class).getMappedResults()) {
+                Object n = d.get("n");
+                taken.put(String.valueOf(d.get("_id")), n instanceof Number x ? x.longValue() : 0L);
+            }
+        }
+        Set<String> mine = bookings.findByLearnerId(l.getId()).stream()
+                .map(Booking::getSlotId).filter(Objects::nonNull).collect(Collectors.toSet());
+        return upcoming.stream()
                 .filter(s -> kind == null || kind.equalsIgnoreCase(s.getKind()))
-                .filter(s -> s.getStartsAt() != null && s.getStartsAt().isAfter(Instant.now()))
                 /*
                  * Doubt clearing is combined across batches: anyone from any batch can
                  * join, which is why recordings are not batch specific either. The old
@@ -982,11 +1101,11 @@ public class LearnerService {
                     m.put("kind", s.getKind());
                     m.put("startsAt", s.getStartsAt());
                     m.put("durationMin", s.getDurationMin());
-                    m.put("mentor", users.findById(s.getMentorId()).map(User::getFullName).orElse(null));
-                    m.put("seatsLeft", s.getCapacity() - bookings.countBySlotId(s.getId()));
+                    m.put("mentor", s.getMentorId() == null ? null : mentorNames.get(s.getMentorId()));
+                    m.put("seatsLeft", s.getCapacity() - taken.getOrDefault(s.getId(), 0L));
                     // the window, not the link: the link is fetched on click
                     m.putAll(meetings.windowFor(s));
-                    m.put("booked", bookings.findBySlotIdAndLearnerId(s.getId(), l.getId()).isPresent());
+                    m.put("booked", mine.contains(s.getId()));
                     return m;
                 })
                 .collect(Collectors.toList());
@@ -1081,6 +1200,18 @@ public class LearnerService {
         if (!Boolean.TRUE.equals(e.get("eligible"))) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, String.valueOf(e.get("reason")));
         }
+        /*
+         * One open request at a time. A double click, or a second tab, used to file a
+         * duplicate that sat in the mentor's queue beside the first. Open is anything
+         * that has not reached an end state (PENDING and SCHEDULED today).
+         */
+        Set<String> ended = Set.of("DONE", "COMPLETED", "DECLINED", "CANCELLED");
+        boolean open = mocks.findByLearnerId(l.getId()).stream()
+                .anyMatch(r -> r.getStatus() == null || !ended.contains(r.getStatus()));
+        if (open) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "You already have a mock interview request open. It will be scheduled before another can be asked for.");
+        }
         MockRequest m = new MockRequest();
         m.setLearnerId(l.getId());
         m.setModuleId(moduleId);
@@ -1133,8 +1264,14 @@ public class LearnerService {
         m.put("inductionRecordingId", b.getInductionRecordingId());
         m.put("whatsappLink", b.getWhatsappLink());
         m.put("size", roster.size());
-        m.put("roster", roster.stream().map(x -> users.findById(x.getUserId())
-                .map(User::getFullName).orElse("Learner")).sorted().toList());
+        /* the names in one read, not one per classmate */
+        Map<String, String> names = new HashMap<>();
+        users.findAllById(roster.stream().map(Learner::getUserId).filter(Objects::nonNull)
+                .collect(Collectors.toSet())).forEach(u -> names.put(u.getId(), u.getFullName()));
+        m.put("roster", roster.stream().map(x -> {
+            String n = names.get(x.getUserId());
+            return n == null ? "Learner" : n;
+        }).sorted().toList());
         m.put("announcements", announcements.findByBatchIdOrderByCreatedAtDesc(b.getId()));
         /*
          * Both of these are toggles on the Track features screen, so they are answered
@@ -1145,16 +1282,22 @@ public class LearnerService {
         boolean pace = featureService.enabled(l, "cohort_pace");
         boolean board = featureService.enabled(l, "batch_leaderboard");
         m.put("cohortPace", pace ? cohortPace(l, roster) : null);
-        m.put("leaderboard", board ? leaderboard(roster) : List.of());
-        m.put("rank", board ? rankFor(l, roster) : null);
+        m.put("leaderboard", board ? leaderboard(b.getId()) : List.of());
+        m.put("rank", board ? rankFor(l, roster.size()) : null);
         return m;
     }
 
-    /** Cohort pace is the earliest at risk signal a learner gets about themselves. */
+    /**
+     * Cohort pace is the earliest at risk signal a learner gets about themselves.
+     *
+     * The roster is already loaded for the names, and each row carries its snapshot, so
+     * the average is arithmetic over rows in hand rather than a recomputation per
+     * learner. A row not yet worked out is computed once here and kept.
+     */
     private Map<String, Object> cohortPace(Learner me, List<Learner> roster) {
-        double mine = ((Number) stats(me).get("percent")).doubleValue();
+        double mine = snapshots.ensure(me).getProgressPercent();
         double avg = roster.stream()
-                .mapToDouble(x -> ((Number) stats(x).get("percent")).doubleValue())
+                .mapToDouble(x -> snapshots.ensure(x).getProgressPercent())
                 .average().orElse(0);
         return Map.of("mine", Math.round(mine), "cohortAverage", Math.round(avg),
                 "standing", mine >= avg ? "AHEAD" : "BEHIND");
@@ -1163,45 +1306,51 @@ public class LearnerService {
     /**
      * Where they stand, in their batch and across everyone on the same course. Both,
      * because a small batch makes a rank meaningless on its own.
+     *
+     * Counted, not computed. This used to work out the percentage of every learner in
+     * the batch and, through findAll, of every learner on the course, on every view of
+     * the batch page. The percentage is on each learner row now, so a place is one more
+     * than the number of rows strictly ahead, which is a count over an index. Ties still
+     * share a place, and the course pool still leaves out anyone on hold.
      */
-    private Map<String, Object> rankFor(Learner l, List<Learner> roster) {
+    private Map<String, Object> rankFor(Learner l, int batchSize) {
+        int mine = snapshots.ensure(l).getProgressPercent();
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("inBatch", placeOf(l, roster));
-        m.put("batchSize", roster.size());
+        m.put("inBatch", batchSize == 0 ? 0
+                : (int) learners.countByBatchIdAndProgressPercentGreaterThan(l.getBatchId(), mine) + 1);
+        m.put("batchSize", batchSize);
 
-        List<Learner> sameCourse = l.getBundleId() == null ? List.of()
-                : learners.findAll().stream()
-                    .filter(x -> l.getBundleId().equals(x.getBundleId()))
-                    .filter(x -> !x.isOnHold())
-                    .toList();
-        m.put("overall", placeOf(l, sameCourse));
-        m.put("overallSize", sameCourse.size());
+        long courseSize = l.getBundleId() == null ? 0
+                : learners.countByBundleIdAndOnHoldFalse(l.getBundleId());
+        m.put("overall", courseSize == 0 ? 0
+                : (int) learners.countByBundleIdAndOnHoldFalseAndProgressPercentGreaterThan(
+                        l.getBundleId(), mine) + 1);
+        m.put("overallSize", courseSize);
         return m;
     }
 
-    /** Ties share a place, so two learners on the same percent are both third. */
-    private int placeOf(Learner l, List<Learner> pool) {
-        if (pool.isEmpty()) return 0;
-        int mine = ((Number) stats(l).get("percent")).intValue();
-        long ahead = pool.stream()
-                .filter(x -> !x.getId().equals(l.getId()))
-                .filter(x -> ((Number) stats(x).get("percent")).intValue() > mine)
-                .count();
-        return (int) ahead + 1;
-    }
-
-    public List<Map<String, Object>> leaderboard(List<Learner> pool) {
-        return pool.stream().map(x -> {
+    /**
+     * The batch's top ten, read off the batch index in order rather than by computing
+     * everyone and sorting. A row the sweep has not reached yet is computed as it is
+     * shown, and the ten re-sorted on the fresh numbers.
+     */
+    public List<Map<String, Object>> leaderboard(String batchId) {
+        if (batchId == null || batchId.isBlank()) return List.of();
+        List<Learner> top = learners.findTop10ByBatchIdOrderByProgressPercentDesc(batchId);
+        Map<String, String> names = new HashMap<>();
+        users.findAllById(top.stream().map(Learner::getUserId).filter(Objects::nonNull)
+                .collect(Collectors.toSet())).forEach(u -> names.put(u.getId(), u.getFullName()));
+        return top.stream().map(x -> {
             Map<String, Object> s = stats(x);
             Map<String, Object> row = new LinkedHashMap<>();
-            row.put("name", users.findById(x.getUserId()).map(User::getFullName).orElse("Learner"));
+            row.put("name", Optional.ofNullable(names.get(x.getUserId())).orElse("Learner"));
             row.put("percent", s.get("percent"));
             row.put("avgQuiz", s.get("avgQuiz"));
             row.put("tasksApproved", s.get("tasksApproved"));
             return row;
         }).sorted((a, b) -> Integer.compare(
                 ((Number) b.get("percent")).intValue(), ((Number) a.get("percent")).intValue()))
-          .limit(10).collect(Collectors.toList());
+          .collect(Collectors.toList());
     }
 
     public List<JobPost> jobs(String userId) {

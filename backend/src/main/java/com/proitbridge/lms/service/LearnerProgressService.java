@@ -2,6 +2,10 @@ package com.proitbridge.lms.service;
 
 import com.proitbridge.lms.domain.*;
 import com.proitbridge.lms.repo.*;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.aggregation.Aggregation;
+import org.springframework.data.mongodb.core.aggregation.GroupOperation;
+import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -41,6 +45,7 @@ public class LearnerProgressService {
     private final ChapterNoteRepository notes;
     private final AiInteractionRepository ai;
     private final VideoRepository videos;
+    private final MongoTemplate mongo;
 
     public LearnerProgressService(BundleRepository bundles, ModuleRepository modules,
                                   ChapterRepository chapters, TopicRepository topics,
@@ -49,7 +54,8 @@ public class LearnerProgressService {
                                   AttendanceRepository attendance, SlotRepository slots,
                                   BookingRepository bookings, StudyDayRepository studyDays,
                                   ChapterNoteRepository notes, AiInteractionRepository ai,
-                                  VideoRepository videos) {
+                                  VideoRepository videos, MongoTemplate mongo) {
+        this.mongo = mongo;
         this.bundles = bundles; this.modules = modules; this.chapters = chapters;
         this.topics = topics; this.progress = progress; this.watch = watch;
         this.quizAttempts = quizAttempts; this.assignments = assignments;
@@ -244,12 +250,19 @@ public class LearnerProgressService {
         long late = rows.stream().filter(a -> "LATE".equals(a.getState())).count();
         long absent = rows.stream().filter(a -> "ABSENT".equals(a.getState())).count();
 
-        List<Map<String, Object>> recent = rows.stream()
+        List<Attendance> recentRows = rows.stream()
                 .sorted(Comparator.comparing(Attendance::getMarkedAt,
                         Comparator.nullsLast(Comparator.reverseOrder())))
                 .limit(10)
+                .toList();
+        /* the ten sessions behind the recent rows in one read, not ten */
+        Map<String, Slot> slotById = new HashMap<>();
+        slots.findAllById(recentRows.stream().map(Attendance::getSlotId)
+                        .filter(Objects::nonNull).collect(Collectors.toSet()))
+                .forEach(x -> slotById.put(x.getId(), x));
+        List<Map<String, Object>> recent = recentRows.stream()
                 .map(a -> {
-                    Slot s = slots.findById(a.getSlotId()).orElse(null);
+                    Slot s = a.getSlotId() == null ? null : slotById.get(a.getSlotId());
                     Map<String, Object> m = new LinkedHashMap<>();
                     m.put("state", a.getState());
                     m.put("at", s == null ? a.getMarkedAt() : s.getStartsAt());
@@ -316,30 +329,94 @@ public class LearnerProgressService {
      * whether its video was finished.
      */
     public Map<String, Object> rowStats(Learner l) {
-        List<WatchPosition> ws = watch.findByLearnerIdOrderByUpdatedAtDesc(l.getId());
-        long finished = ws.stream().filter(WatchPosition::isCompleted).count();
-        long started = ws.stream().filter(w -> !w.isCompleted() && w.getPercent() > 0).count();
-        Instant last = ws.stream().map(WatchPosition::getUpdatedAt)
-                .filter(Objects::nonNull).max(Comparator.naturalOrder()).orElse(null);
+        return rowStatsFor(List.of(l)).getOrDefault(l.getId(), emptyRowStats());
+    }
 
-        List<Attendance> att = attendance.findByLearnerId(l.getId());
-        long turnedUp = att.stream().filter(a -> !"ABSENT".equals(a.getState())).count();
+    /**
+     * The same numbers for a whole roster at once, keyed by learner id.
+     *
+     * A mentor screen with eighty learners called rowStats eighty times, three reads
+     * each, and each read pulled every watch row the learner had. This is six grouped
+     * counts in the database, whatever the roster size, each over a learnerId index, and
+     * nothing but the counts comes back over the wire.
+     */
+    public Map<String, Map<String, Object>> rowStatsFor(Collection<Learner> roster) {
+        Map<String, Map<String, Object>> out = new LinkedHashMap<>();
+        List<String> ids = roster.stream().map(Learner::getId).filter(Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) return out;
 
-        LocalDate today = LocalDate.now();
-        int weekMinutes = studyDays.findByLearnerIdOrderByDayDesc(l.getId()).stream()
-                .filter(d -> d.getDay() != null && !d.getDay().isBefore(today.minusDays(6)))
-                .mapToInt(StudyDay::getMinutes).sum();
+        Map<String, org.bson.Document> touched = grouped(WatchPosition.class,
+                Criteria.where("learnerId").in(ids),
+                Aggregation.group("learnerId").count().as("n").max("updatedAt").as("last"));
+        Map<String, org.bson.Document> finished = grouped(WatchPosition.class,
+                Criteria.where("learnerId").in(ids).and("completed").is(true),
+                Aggregation.group("learnerId").count().as("n"));
+        Map<String, org.bson.Document> started = grouped(WatchPosition.class,
+                Criteria.where("learnerId").in(ids).and("completed").is(false).and("percent").gt(0),
+                Aggregation.group("learnerId").count().as("n"));
+        Map<String, org.bson.Document> marked = grouped(Attendance.class,
+                Criteria.where("learnerId").in(ids),
+                Aggregation.group("learnerId").count().as("n"));
+        Map<String, org.bson.Document> turnedUp = grouped(Attendance.class,
+                Criteria.where("learnerId").in(ids).and("state").ne("ABSENT"),
+                Aggregation.group("learnerId").count().as("n"));
+        Map<String, org.bson.Document> minutes = grouped(StudyDay.class,
+                Criteria.where("learnerId").in(ids).and("day").gte(LocalDate.now().minusDays(6)),
+                Aggregation.group("learnerId").sum("minutes").as("n"));
 
+        for (String id : ids) {
+            Instant last = toInstant(touched.containsKey(id) ? touched.get(id).get("last") : null);
+            long att = num(marked.get(id));
+            long up = num(turnedUp.get(id));
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("videosFinished", num(finished.get(id)));
+            m.put("videosStarted", num(started.get(id)));
+            m.put("videosTouched", (int) num(touched.get(id)));
+            m.put("lastWatchedAt", last);
+            m.put("daysSinceWatched", last == null ? null : ChronoUnit.DAYS.between(last, Instant.now()));
+            m.put("attendanceMarked", (int) att);
+            m.put("attendanceRate", att == 0 ? null : Math.round(up * 100f / att));
+            m.put("weekMinutes", (int) num(minutes.get(id)));
+            out.put(id, m);
+        }
+        return out;
+    }
+
+    private Map<String, Object> emptyRowStats() {
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("videosFinished", finished);
-        m.put("videosStarted", started);
-        m.put("videosTouched", ws.size());
-        m.put("lastWatchedAt", last);
-        m.put("daysSinceWatched", last == null ? null : ChronoUnit.DAYS.between(last, Instant.now()));
-        m.put("attendanceMarked", att.size());
-        m.put("attendanceRate", att.isEmpty() ? null : Math.round(turnedUp * 100f / att.size()));
-        m.put("weekMinutes", weekMinutes);
+        m.put("videosFinished", 0L);
+        m.put("videosStarted", 0L);
+        m.put("videosTouched", 0);
+        m.put("lastWatchedAt", null);
+        m.put("daysSinceWatched", null);
+        m.put("attendanceMarked", 0);
+        m.put("attendanceRate", null);
+        m.put("weekMinutes", 0);
         return m;
+    }
+
+    /* one $match + $group, results keyed by the grouped learnerId */
+    private Map<String, org.bson.Document> grouped(Class<?> type, Criteria match, GroupOperation group) {
+        Map<String, org.bson.Document> byId = new HashMap<>();
+        for (org.bson.Document d : mongo.aggregate(
+                Aggregation.newAggregation(Aggregation.match(match), group), type, org.bson.Document.class)
+                .getMappedResults()) {
+            Object key = d.get("_id");
+            if (key != null) byId.put(String.valueOf(key), d);
+        }
+        return byId;
+    }
+
+    private static long num(org.bson.Document d) {
+        if (d == null) return 0;
+        Object n = d.get("n");
+        return n instanceof Number x ? x.longValue() : 0;
+    }
+
+    private static Instant toInstant(Object o) {
+        if (o instanceof Date d) return d.toInstant();
+        if (o instanceof Instant i) return i;
+        return null;
     }
 
     @SuppressWarnings("unchecked")

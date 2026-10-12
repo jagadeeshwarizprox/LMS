@@ -2,10 +2,20 @@ package com.proitbridge.lms.domain;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import java.time.Instant;
 import java.util.*;
 
 /** Mentors stay put. Every change is deliberate, reasoned and kept. */
+/*
+ * Indexes for twenty thousand learners and their logs.
+ *
+ * A learner's mentor history, newest first.
+ */
+@CompoundIndexes({
+    @CompoundIndex(name = "learner_at", def = "{'learnerId': 1, 'at': -1}")
+})
 @Document("mentor_assignments")
 public class MentorAssignment {
     @Id private String id;

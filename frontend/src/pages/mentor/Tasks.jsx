@@ -74,6 +74,9 @@ export default function Tasks() {
    * several learners was already served and never called, so a mentor with the same
    * thing to tell six people sent it six times.
    */
+  /* the server drops learners this mentor cannot see; say so rather than imply everyone got it */
+  const skippedNote = (n) => (n > 0 ? ` ${n} skipped, not assigned to you.` : '')
+
   const broadcast = async () => {
     const r = await ask({
       title: `Message ${picked.length} learner${picked.length === 1 ? '' : 's'}`,
@@ -90,7 +93,7 @@ export default function Tasks() {
       const out = await api.post('/mentor/broadcast', {
         learnerIds: picked, subject: r.subject.trim(), body: r.body.trim()
       })
-      toast.push(`Sent to ${out.sent} learner${out.sent === 1 ? '' : 's'}.`)
+      toast.push(`Sent to ${out.sent} learner${out.sent === 1 ? '' : 's'}.${skippedNote(out.skipped)}`)
       setPicked([])
     } catch (e) { toast.push(e.message, 'bad') }
   }
@@ -109,8 +112,10 @@ export default function Tasks() {
         { name: 'dueAt', label: 'Due', type: 'date' },
         ...(picked.length ? [] : [{
           name: 'batchId', label: 'Batch', required: true,
-          options: roster.groups.filter((g) => g.label.startsWith('Batch'))
-            .map((g) => ({ value: g.learners[0]?.batch, label: `${g.label} · ${g.count} learners` }))
+          /* the batch id, not its code: the server looks the cohort up by id, so sending
+             the code set the task for nobody */
+          options: roster.groups.filter((g) => g.label.startsWith('Batch') && g.learners[0]?.batchId)
+            .map((g) => ({ value: g.learners[0].batchId, label: `${g.label} · ${g.count} learners` }))
         }]),
         ...(rubrics.length ? [{
           name: 'rubricId', label: 'Rubric',
@@ -130,7 +135,7 @@ export default function Tasks() {
         learnerIds: picked,
         batchId: r.batchId || null
       })
-      toast.push(`Set for ${res.created} learner${res.created > 1 ? 's' : ''}. They have been told.`)
+      toast.push(`Set for ${res.created} learner${res.created > 1 ? 's' : ''}. They have been told.${skippedNote(res.skipped)}`)
       setPicked([])
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
@@ -152,10 +157,19 @@ export default function Tasks() {
     const before = queue
     setQueue([])
     toast.pushUndo({
-      message: `${ids.length} approved.`,
+      message: `Approving ${ids.length}.`,
       commit: async () => {
-        await api.post('/mentor/tasks/bulk-review',
+        const out = await api.post('/mentor/tasks/bulk-review',
           { ids, status: 'APPROVED', feedback: r.feedback })
+        /* say what actually happened: a refused row used to be reported as approved */
+        const done = out?.approved ?? out?.reviewed ?? 0
+        const failed = out?.failed ?? 0
+        if (failed) {
+          const why = out.failures?.[0]?.reason
+          toast.push(`${done} approved, ${failed} could not be${why ? `: ${why}` : '.'}`, 'bad')
+        } else {
+          toast.push(`${done} approved.`)
+        }
         await load()
       },
       revert: () => setQueue(before)

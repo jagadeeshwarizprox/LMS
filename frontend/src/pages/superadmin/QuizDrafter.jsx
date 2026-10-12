@@ -1,15 +1,24 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
 import { useToast } from '../../context/ToastContext'
-import { Card, Empty, Tag } from '../../components/Ui'
+import { Card, Empty, LoadError, Tag } from '../../components/Ui'
 
 /**
  * The model writes candidates, a person publishes them. Drafts are marked and are
  * never served to a learner, so a bad question cannot reach a chapter test by
  * accident. Editing before publishing is the normal path, not the exception.
  */
-export default function QuizDrafter({ modules }) {
+export default function QuizDrafter({ modules: given }) {
   const toast = useToast()
+  /* opened from its own route there is no parent to hand the modules down, and
+     modules.map on undefined took the whole page out. It fetches them itself then */
+  const [loaded, setLoaded] = useState(null)
+  const [loadError, setLoadError] = useState(null)
+  const loadModules = () => api.get('/super/catalogue')
+    .then((t) => { setLoaded(t.modules || []); setLoadError(null) })
+    .catch((e) => setLoadError(e.message))
+  useEffect(() => { if (!given) loadModules() }, [given])
+  const modules = given || loaded || []
   const [moduleId, setModuleId] = useState('')
   const [chapters, setChapters] = useState([])
   const [chapterId, setChapterId] = useState('')
@@ -21,7 +30,7 @@ export default function QuizDrafter({ modules }) {
     api.get(`/super/modules/${moduleId}/chapters`).then((c) => {
       setChapters(c)
       setChapterId(c[0]?.id || '')
-    })
+    }).catch((e) => { setChapters([]); setChapterId(''); toast.push(e.message, 'bad') })
   }, [moduleId])
 
   const load = (id) => {
@@ -61,6 +70,8 @@ export default function QuizDrafter({ modules }) {
 
   const drafts = questions.filter((q) => q.draft)
   const live = questions.filter((q) => !q.draft)
+
+  if (loadError) return <LoadError error={loadError} onRetry={loadModules} />
 
   return (
     <Card
