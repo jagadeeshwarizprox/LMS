@@ -64,6 +64,13 @@ public class LocalDiskStorage implements StorageProvider {
         }
     }
 
+    /** The file itself, so a recording can be served by range rather than read whole. */
+    @Override
+    public Path localPath(String storageKey) {
+        Path p = resolve(storageKey);
+        return Files.isRegularFile(p) ? p : null;
+    }
+
     /** The key is generated, but a path that escapes the directory is still worth refusing. */
     private Path resolve(String storageKey) {
         Path p = root.resolve(storageKey).normalize();

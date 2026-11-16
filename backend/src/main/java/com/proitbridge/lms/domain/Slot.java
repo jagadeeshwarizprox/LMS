@@ -48,6 +48,17 @@ public class Slot {
     private String topic;
     private String speaker;
     private boolean published = true;
+    /*
+     * When the session was confirmed as held, and by whom. Null means it has not been.
+     *
+     * Nothing about joining writes this: pressing the join button, or opening the link,
+     * is not evidence that the call happened. It is set once, by the host or the office,
+     * after the fact, and marking it is what records attendance and clears the onboarding
+     * gate for everyone who was booked. A cancelled session can never be held, and a held
+     * session can no longer be cancelled or moved, so the two states do not overlap.
+     */
+    private Instant heldAt;
+    private String heldBy;
 
     public String getMentorId() { return mentorId; }
     public void setMentorId(String mentorId) { this.mentorId = mentorId; }
@@ -87,6 +98,12 @@ public class Slot {
     public void setSpeaker(String speaker) { this.speaker = speaker; }
     public boolean isPublished() { return published; }
     public void setPublished(boolean published) { this.published = published; }
+    public Instant getHeldAt() { return heldAt; }
+    public void setHeldAt(Instant heldAt) { this.heldAt = heldAt; }
+    public String getHeldBy() { return heldBy; }
+    public void setHeldBy(String heldBy) { this.heldBy = heldBy; }
+    /** Confirmed as held. Read by every screen that shows a session's state. */
+    public boolean isHeld() { return heldAt != null; }
 
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }

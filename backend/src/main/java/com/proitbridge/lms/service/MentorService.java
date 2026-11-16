@@ -567,12 +567,16 @@ public class MentorService {
         return mine.stream().map(s -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("slot", s);
-            m.put("booked", bySlot.getOrDefault(s.getId(), List.of()).stream().map(b -> {
+            List<Booking> bs = bySlot.getOrDefault(s.getId(), List.of());
+            m.put("booked", bs.stream().map(b -> {
                 Learner l = b.getLearnerId() == null ? null : learnerById.get(b.getLearnerId());
                 if (l == null) return "";
                 User u = userById.get(l.getUserId());
                 return u == null ? "" : u.getFullName();
             }).toList());
+            /* the same bookings by learner id, in the same order, so marking the session
+               held can say who was absent without a second lookup */
+            m.put("bookedIds", bs.stream().map(b -> b.getLearnerId() == null ? "" : b.getLearnerId()).toList());
             return m;
         }).collect(Collectors.toList());
     }

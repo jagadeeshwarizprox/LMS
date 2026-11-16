@@ -64,6 +64,7 @@ public class RecordingService {
     private final ActivityService activity;
     private final MentorCoverService cover;
     private final MongoTemplate mongo;
+    private final StoredFileRepository storedFiles;
 
     public RecordingService(RecordingRepository recordings, SlotRepository slots,
                             VideoRepository videos, ModuleRepository modules,
@@ -71,8 +72,8 @@ public class RecordingService {
                             LearnerRepository learners, UserRepository users,
                             AttendanceRepository attendance, AiInteractionRepository aiLog,
                             ActivityService activity, MentorCoverService cover,
-                            MongoTemplate mongo) {
-        this.mongo = mongo;
+                            MongoTemplate mongo, StoredFileRepository storedFiles) {
+        this.mongo = mongo; this.storedFiles = storedFiles;
         this.recordings = recordings; this.slots = slots; this.videos = videos;
         this.modules = modules; this.chapters = chapters; this.batches = batches;
         this.learners = learners; this.users = users; this.attendance = attendance;
@@ -226,16 +227,54 @@ public class RecordingService {
                     "A recap belongs to a subject. Choose the module it covers.");
         }
 
+        /*
+         * Sharing with one batch. A recording with an audience of BATCH needs the batch;
+         * without it the row is unreachable by the batch rule and invisible to everyone,
+         * which reads as "published but nobody can see it". And a mentor may only share
+         * with a batch they teach, the same way they may only publish a session they ran.
+         */
+        String audience = in.audience() != null ? in.audience()
+                : DEFAULT_AUDIENCE.getOrDefault(kind, "ALL");
+        String batchId = "BATCH".equals(audience)
+                ? (in.batchId() != null && !in.batchId().isBlank() ? in.batchId()
+                   : slot == null ? null : slot.getBatchId())
+                : null;
+        if ("BATCH".equals(audience)) {
+            if (batchId == null) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Choose the batch this recording is for.");
+            }
+            Batch b = batches.findById(batchId)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such batch."));
+            boolean office = "ADMIN".equals(actorRole) || "SUPER_ADMIN".equals(actorRole);
+            boolean teaches = actorId != null && b.getMentorId() != null
+                    && (actorId.equals(b.getMentorId()) || cover.canActOn(actorId, b.getMentorId()));
+            if (!office && !teaches) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "That batch is somebody else's. Its mentor, or the office, shares recordings with it.");
+            }
+        }
+
         Video v = new Video();
         v.setTitle(in.title());
         v.setKind("RECORDING");
         v.setUploadedBy(actorId);
         if (in.videoLink() != null && !in.videoLink().isBlank()) {
-            v.setProvider(in.provider() == null ? "YOUTUBE" : in.provider());
+            /* the link says where it lives; the form's provider, if any, is the fallback */
+            v.setProvider(VideoRefs.detectProvider(in.videoLink(), in.provider()));
             v.setExternalId(VideoRefs.parse(in.videoLink(), v.getProvider()));
         } else {
             /* uploaded straight into the LMS: the file is the video, and it plays
-               through the same grant flow as everything else */
+               through the same grant flow as everything else. It has to be one uploaded
+               as a recording: a notebook or a slide deck handed over as the video would
+               be stored, listed, and unplayable. */
+            StoredFile f = storedFiles.findById(in.fileId())
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                            "That uploaded file is gone. Upload it again."));
+            if (!FileService.RECORDING.equals(f.getPurpose())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "That file was not uploaded as a recording. Use the recording upload box.");
+            }
             v.setProvider("UPLOAD");
             v.setExternalId(in.fileId());
         }
@@ -259,14 +298,10 @@ public class RecordingService {
                 : slot != null ? slot.getDurationMin() : 0);
         r.setHeldOn(slot != null ? slot.getStartsAt() : Instant.now());
 
-        String audience = in.audience() != null ? in.audience()
-                : DEFAULT_AUDIENCE.getOrDefault(kind, "ALL");
         r.setAudience(audience);
         /* doubt clearing is combined across batches, so scoping it to one would hide it
            from most of the people who were actually in the room */
-        r.setBatchId("BATCH".equals(audience)
-                ? (in.batchId() != null ? in.batchId() : slot == null ? null : slot.getBatchId())
-                : null);
+        r.setBatchId(batchId);
         r.setTrackScope("TRACK".equals(audience) && in.trackScope() != null
                 ? in.trackScope() : "BOTH");
 
@@ -335,12 +370,18 @@ public class RecordingService {
         users.findAllById(rows.stream().map(Recording::getUploadedBy).filter(Objects::nonNull)
                 .collect(Collectors.toSet())).forEach(u -> names.put(u.getId(), u.getFullName()));
         ViewNames vn = viewNames(rows);
+        /* which batch a shared recording went to, so the list says more than "BATCH" */
+        Map<String, String> batchNames = new HashMap<>();
+        batches.findAllById(rows.stream().map(Recording::getBatchId).filter(Objects::nonNull)
+                .collect(Collectors.toSet())).forEach(b -> batchNames.put(b.getId(),
+                        b.getCode() != null ? b.getCode() : b.getName()));
         return rows.stream()
                 .map(r -> {
                     Map<String, Object> m = view(r, vn);
                     m.put("uploadedById", r.getUploadedBy());
                     m.put("uploadedBy", r.getUploadedBy() == null ? null : names.get(r.getUploadedBy()));
                     m.put("audience", r.getAudience());
+                    m.put("batch", r.getBatchId() == null ? null : batchNames.get(r.getBatchId()));
                     return m;
                 }).collect(Collectors.toList());
     }

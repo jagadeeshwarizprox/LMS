@@ -14,6 +14,7 @@ import com.proitbridge.lms.service.ProjectRunService;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -156,6 +157,22 @@ public class MentorController {
         schedule.assertMayRunSlot(me.id(), me.role(), id);
         schedule.mark(id, body.get("learnerId"), body.getOrDefault("state", "PRESENT"));
         return Map.of("ok", true);
+    }
+
+    /**
+     * The host confirms the session ran. Same ownership rule as taking the register,
+     * because that is what it does: everyone booked is marked present, except anyone
+     * listed as absent. Idempotent, so a double press changes nothing the second time.
+     */
+    @PostMapping("/slots/{id}/held")
+    public Slot markHeld(@PathVariable String id,
+                         @RequestBody(required = false) Map<String, Object> body) {
+        AuthUser me = current.get();
+        schedule.assertMayRunSlot(me.id(), me.role(), id);
+        List<String> absent = new ArrayList<>();
+        Object raw = body == null ? null : body.get("absentLearnerIds");
+        if (raw instanceof List<?> l) for (Object o : l) if (o != null) absent.add(String.valueOf(o));
+        return schedule.markHeld(id, me.id(), me.email(), absent);
     }
 
     @PostMapping("/slots/{id}/notes")

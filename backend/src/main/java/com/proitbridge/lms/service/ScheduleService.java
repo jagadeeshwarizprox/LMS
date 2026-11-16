@@ -473,6 +473,7 @@ public class ScheduleService {
         m.put("booked", booked.getOrDefault(s.getId(), 0L));
         m.put("published", s.isPublished());
         m.put("cancelled", s.isCancelled());
+        m.put("held", s.isHeld());
         m.put("scheduleId", s.getScheduleId());
         return m;
     }
@@ -839,6 +840,12 @@ public class ScheduleService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "Say why it is cancelled. Whoever booked it will be told.");
         }
+        /* a session that was confirmed held already happened; cancelling it would say
+           the opposite of the attendance it recorded */
+        if (s.isHeld()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "This session was already marked as held, so it cannot be cancelled.");
+        }
         s.setCancelled(true);
         s.setOpen(false);
         s.setCancelReason(reason);
@@ -860,6 +867,12 @@ public class ScheduleService {
         Slot s = slots.findById(slotId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such session."));
         Instant was = s.getStartsAt();
+        /* moving a held session would put a confirmed call back in the future with its
+           attendance still attached. A follow-up is a new session, released as one. */
+        if (s.isHeld()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "This session was already marked as held. Release a new one for the follow-up.");
+        }
         keepGeneratedKey(s);
         s.setStartsAt(newStart);
         s.setCancelled(false);
@@ -960,6 +973,57 @@ public class ScheduleService {
         a.setMarkedAt(Instant.now());
         attendance.save(a);
         applyGateFromAttendance(slotId, learnerId, state);
+    }
+
+    /**
+     * The host confirms the session happened.
+     *
+     * There is no feed from the meeting provider: the room is a pasted link, and nothing
+     * here learns who was in it or when it ended. So the fact that an onboarding call
+     * took place has to come from the person who ran it, after it ran. This is that
+     * confirmation, and it is the only thing that moves a session to held. Pressing join
+     * does not, and neither does the window closing, because a mentor who opened the
+     * link and then had the learner not turn up has not held anything.
+     *
+     * Marking held records attendance for everyone booked, which is what clears the
+     * onboarding gate through the one path that already does it, so the learner's home,
+     * the onboarding board and the mentor's roster all read the same answer. Anybody the
+     * host says did not come is marked absent instead and keeps their gate.
+     *
+     * It happens once. A second press returns the session as it is rather than writing
+     * a second attendance row or a second log line.
+     */
+    public Slot markHeld(String slotId, String actorId, String actorEmail, List<String> absentLearnerIds) {
+        Slot s = slots.findById(slotId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such session."));
+        if (s.isHeld()) return s;
+        if (s.isCancelled()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "This session was cancelled, so it cannot be marked as held.");
+        }
+        if (s.getStartsAt() == null || s.getStartsAt().isAfter(Instant.now())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "This session has not started yet. Mark it held once it has run.");
+        }
+        Set<String> absent = absentLearnerIds == null ? Set.of() : new HashSet<>(absentLearnerIds);
+        int present = 0;
+        for (Booking b : bookings.findBySlotId(slotId)) {
+            if (b.getLearnerId() == null || "CANCELLED".equals(b.getStatus())) continue;
+            boolean came = !absent.contains(b.getLearnerId());
+            mark(slotId, b.getLearnerId(), came ? "PRESENT" : "ABSENT");
+            /* the booking's own status was declared and never written; it is the record
+               the learner's history reads */
+            b.setStatus(came ? "ATTENDED" : "BOOKED");
+            bookings.save(b);
+            if (came) present++;
+        }
+        s.setHeldAt(Instant.now());
+        s.setHeldBy(actorId);
+        s.setOpen(false);
+        Slot saved = slots.save(s);
+        activity.log(actorId, actorEmail, "SESSION_HELD", "slot",
+                slotId + " (" + s.getKind() + "): " + present + " attended, " + absent.size() + " absent");
+        return saved;
     }
 
     /** The onboarding and induction kinds are the only two that gate anything. */

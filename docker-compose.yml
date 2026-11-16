@@ -70,6 +70,11 @@ services:
       CF_STREAM_PRIVATE_KEY: ${CF_STREAM_PRIVATE_KEY:-}
       LMS_WALKTHROUGH_URL: ${LMS_WALKTHROUGH_URL:-}
       FILES_DIR: /data/files
+      FILES_MAX_BYTES: ${FILES_MAX_BYTES:-26214400}
+      # session recordings: their own ceiling, and the multipart ceiling above it
+      FILES_VIDEO_MAX_BYTES: ${FILES_VIDEO_MAX_BYTES:-524288000}
+      UPLOAD_MAX_FILE_SIZE: ${UPLOAD_MAX_FILE_SIZE:-520MB}
+      UPLOAD_MAX_REQUEST_SIZE: ${UPLOAD_MAX_REQUEST_SIZE:-530MB}
       IMPORT_WATCH_DIR: ${IMPORT_WATCH_DIR:-}
     # not published: nginx forwards /api/ here over the compose network
     expose:
@@ -95,6 +100,8 @@ services:
     environment:
       PORT: "8080"
       API_UPSTREAM: http://api:8080
+      # must be at least UPLOAD_MAX_REQUEST_SIZE on the api, or nginx refuses first
+      UPLOAD_MAX_BODY: ${UPLOAD_MAX_BODY:-530m}
     ports:
       - "${WEB_PORT:-8081}:8080"
 

@@ -157,6 +157,18 @@ public class MeetingService {
     public Map<String, Object> join(String slotId, String userId, String role) {
         Slot s = slots.findById(slotId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such session."));
+        /*
+         * A cancelled session kept handing out its link. The slot list said cancelled,
+         * the join window said open, and the mentor's standing room is always live, so
+         * pressing join put somebody in a room where nobody was coming. The state is
+         * checked before the window, for staff as well, because a cancellation is a
+         * decision about the session and not about who is asking.
+         */
+        if (s.isCancelled()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "This session was cancelled" + (s.getCancelReason() == null || s.getCancelReason().isBlank()
+                            ? "." : ": " + s.getCancelReason()));
+        }
         Map<String, Object> w = windowFor(s);
         boolean staff = !"LEARNER".equals(role);
         if (!staff && !Boolean.TRUE.equals(w.get("open"))) {

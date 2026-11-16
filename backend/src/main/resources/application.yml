@@ -41,10 +41,14 @@ spring:
       mail.smtp.starttls.enable: ${SMTP_TLS:false}
   servlet:
     multipart:
-      # must not be below lms.files.max-bytes, or Spring rejects the upload
-      # before FileService can give a useful message
-      max-file-size: 25MB
-      max-request-size: 30MB
+      # The ceiling Spring enforces before any code of ours runs. It must be at least
+      # the larger of lms.files.max-bytes and lms.files.video-max-bytes, or a recording
+      # is refused with MaxUploadSizeExceededException before FileService can say what
+      # the real limit is. The per-type limits below are what actually apply to a file.
+      max-file-size: ${UPLOAD_MAX_FILE_SIZE:520MB}
+      max-request-size: ${UPLOAD_MAX_REQUEST_SIZE:530MB}
+      # spooled to disk past this, so a large recording never sits in the heap
+      file-size-threshold: 1MB
 
 lms:
   jwt:
@@ -98,7 +102,11 @@ lms:
   files:
     provider: ${FILES_PROVIDER:LOCAL}          # LOCAL today; S3 is one class away
     dir: ${FILES_DIR:./data/files}
-    max-bytes: ${FILES_MAX_BYTES:26214400}     # 25 MB
+    max-bytes: ${FILES_MAX_BYTES:26214400}     # 25 MB, documents and submissions
+    # A session recording is a different size of thing. This is its own ceiling, applied
+    # only to video files uploaded as a RECORDING, so raising it does not raise the
+    # limit on what a learner may hand in.
+    video-max-bytes: ${FILES_VIDEO_MAX_BYTES:524288000}   # 500 MB
   bootstrap:
     # the one account a fresh database gets; it must change its password on first use
     email: ${BOOTSTRAP_EMAIL:}

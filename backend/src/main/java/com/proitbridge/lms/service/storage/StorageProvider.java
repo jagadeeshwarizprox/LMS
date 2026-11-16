@@ -34,4 +34,14 @@ public interface StorageProvider {
     default String directUrl(String storageKey, String filename, int seconds) {
         throw new UnsupportedOperationException("This provider cannot sign URLs.");
     }
+
+    /**
+     * Where the bytes are on a local disk, or null when they are not on one.
+     *
+     * get() reads the whole object into memory, which is the right shape for a notebook
+     * and the wrong one for a two hour recording: a player seeks, and every seek would
+     * re-read the file. A path lets the web layer hand the file to the container, which
+     * serves byte ranges from it without ever holding more than a buffer.
+     */
+    default java.nio.file.Path localPath(String storageKey) { return null; }
 }

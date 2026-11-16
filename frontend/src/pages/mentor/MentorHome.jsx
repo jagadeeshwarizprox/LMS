@@ -71,6 +71,37 @@ export default function MentorHome() {
 
   if (!data?.counts) return <RoadmapSkeleton />
 
+  /*
+   * "open now" was a label on a row that did nothing. A mentor read it as the button it
+   * looked like, pressed it, and nothing opened. The row is the button now, and it does
+   * what the learner's join button does: fetch the link at click time and open it. The
+   * link is never in the list.
+   */
+  const joinSession = async (s) => {
+    try {
+      const r = await api.post(`/slots/${s.id}/join`)
+      window.open(r.joinUrl, '_blank', 'noopener')
+      if (r.passcode) toast.push(`Passcode ${r.passcode}`)
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
+
+  /* confirming the call happened is a separate act from joining it: this is the one
+     that records attendance and clears the onboarding gate */
+  const markHeld = async (s) => {
+    const ok = await ask({
+      title: 'Mark this session as held?',
+      body: `Everyone booked (${s.booked}) is marked present and, for an onboarding call, `
+        + 'their onboarding gate clears. To mark somebody absent instead, use Attendance.',
+      confirmLabel: 'Mark as held'
+    })
+    if (!ok) return
+    try {
+      await api.post(`/mentor/slots/${s.id}/held`, {})
+      toast.push('Marked as held.')
+      setDay(await api.get('/mentor/day').catch(() => day))
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
+
   const review = async (kind, id) => {
     if (sending) return
     setSending(true)
@@ -184,17 +215,36 @@ export default function MentorHome() {
               <div className="desk-clear">Nothing scheduled today. A good day to clear the queue.</div>
             ) : (
               <div className="desk-list">
-                {day.sessionsToday.map((s) => (
-                  <div className="desk-item" key={s.id}>
-                    <span className="desk-kind">{KIND[s.kind] || s.kind}</span>
-                    <span className="desk-title mono">
-                      {new Date(s.startsAt).toLocaleTimeString('en-IN',
-                        { hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                    <span className="desk-detail">{s.booked} of {s.capacity} booked</span>
-                    {s.open && <span className="desk-now">open now</span>}
-                  </div>
-                ))}
+                {day.sessionsToday.map((s) => {
+                  const started = new Date(s.startsAt) <= new Date()
+                  const joinable = !s.cancelled && !s.held
+                  return (
+                    <div className={`desk-item ${joinable ? 'as-btn' : ''}`} key={s.id}
+                      role={joinable ? 'button' : undefined}
+                      tabIndex={joinable ? 0 : undefined}
+                      title={joinable ? (s.hasRoom ? 'Open the meeting' : 'No meeting link is set') : undefined}
+                      onClick={joinable ? () => joinSession(s) : undefined}
+                      onKeyDown={joinable ? (e) => (e.key === 'Enter' || e.key === ' ') && joinSession(s) : undefined}>
+                      <span className="desk-kind">{KIND[s.kind] || s.kind}</span>
+                      <span className="desk-title mono">
+                        {new Date(s.startsAt).toLocaleTimeString('en-IN',
+                          { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                      <span className="desk-detail">{s.booked} of {s.capacity} booked</span>
+                      {s.cancelled ? <span className="desk-late">cancelled</span>
+                        : s.held ? <span className="desk-now">held</span>
+                        : !s.hasRoom ? <span className="desk-late">no link</span>
+                        : s.open ? <span className="desk-now">open now</span>
+                        : <span className="desk-detail">join</span>}
+                      {joinable && started && (
+                        <button className="btn btn-quiet btn-sm ms-2"
+                          onClick={(e) => { e.stopPropagation(); markHeld(s) }}>
+                          Mark as held
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
                 {day.callsDue.map((c) => (
                   <button className="desk-item as-btn" key={c.learnerId}
                     onClick={() => navigate(`/mentor/learners/${c.learnerId}`)}>

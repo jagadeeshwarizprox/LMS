@@ -205,7 +205,10 @@ export default function Recordings() {
                     <div className="small muted">{KIND[r.kind] || r.kind}</div>
                   </td>
                   <td data-label="Held" className="mono">{r.heldOn ? fmtDate(r.heldOn) : '\u2014'}</td>
-                  <td data-label="Belongs to" className="small">{r.chapter || r.module || '\u2014'}</td>
+                  {/* a recording shared with one batch says which, not just "BATCH" */}
+                  <td data-label="Belongs to" className="small">
+                    {r.audience === 'BATCH' && r.batch ? `Batch ${r.batch}` : (r.chapter || r.module || '\u2014')}
+                  </td>
                   <td data-label="By" className="small">{r.uploadedBy || '\u2014'}</td>
                   <td className="text-end">
                     <button className="btn btn-s" onClick={() => takeDown(r)}>Take down</button>

@@ -1,7 +1,9 @@
 import { useRef, useState } from 'react'
-import { api } from '../api/client'
+import { uploadWithProgress } from '../api/client'
 import { useToast } from '../context/ToastContext'
 import Icon from './Icon'
+
+const mb = (bytes) => `${Math.round(bytes / (1024 * 1024))} MB`
 
 /**
  * A real upload. Links to somebody's Drive break within a month, and a learner
@@ -19,6 +21,11 @@ import Icon from './Icon'
  * `onRemoved` fires with the uploaded file when a finished row is taken off the list.
  * The cross only ever tidied this list, so a file a person removed here was still in
  * whatever the parent had collected and went out with the submission anyway.
+ *
+ * `maxBytes`, when given, is checked before anything is sent: a recording over the
+ * limit used to go all the way up the wire and come back as "Maximum upload size
+ * exceeded". The row shows progress while it goes, because a 400 MB file on a home
+ * connection takes minutes and "Uploading" on its own reads as stuck.
  */
 export default function FileUpload({
   purpose = 'TASK',
@@ -28,7 +35,9 @@ export default function FileUpload({
   onRemoved,
   multiple = true,
   label = 'Attach a file',
-  accept
+  accept,
+  maxBytes,
+  hint
 }) {
   const toast = useToast()
   const input = useRef(null)
@@ -49,20 +58,25 @@ export default function FileUpload({
     const done = []
     for (let i = 0; i < picked.length; i++) {
       const at = base + i
+      const patch = (p) => setRows((rs) => rs.map((row, n) => (n === at ? { ...row, ...p } : row)))
+      /* refused here, before a byte goes, with the number the server would have said */
+      if (maxBytes && picked[i].size > maxBytes) {
+        patch({ state: 'bad', note: `${mb(picked[i].size)} is over the ${mb(maxBytes)} limit.` })
+        continue
+      }
       try {
         const fd = new FormData()
         fd.append('file', picked[i])
         const q = new URLSearchParams({ purpose, ...(linkedId ? { linkedId } : {}) })
-        const r = await api.upload(`/files?${q}`, fd)
+        const r = await uploadWithProgress(`/files?${q}`, fd, (pct, loaded, total) => {
+          patch({ pct, note: pct < 100 ? `${pct}% · ${mb(loaded)} of ${mb(total)}` : 'Saving…' })
+        })
         done.push(r)
-        setRows((rs) => rs.map((row, n) => (n === at
-          ? { ...row, state: 'done', id: r.id, file: r, note: `${Math.round(r.sizeBytes / 1024)} KB` }
-          : row)))
+        patch({ state: 'done', id: r.id, file: r, pct: 100,
+          note: r.sizeBytes >= 1024 * 1024 ? mb(r.sizeBytes) : `${Math.round(r.sizeBytes / 1024)} KB` })
         onUploaded?.(r)
       } catch (e) {
-        setRows((rs) => rs.map((row, n) => (n === at
-          ? { ...row, state: 'bad', note: e.message }
-          : row)))
+        patch({ state: 'bad', note: e.message, pct: 0 })
       }
     }
 
@@ -112,9 +126,10 @@ export default function FileUpload({
         <div>
           <strong>{busy ? 'Uploading' : label}</strong>
           <div className="small muted">
-            {multiple
+            {hint || (multiple
               ? 'Drop them here, or click to choose. Notebooks, scripts, documents, sheets, slides, images and archives.'
-              : 'Drop it here, or click to choose.'}
+              : 'Drop it here, or click to choose.')}
+            {maxBytes ? ` Up to ${mb(maxBytes)}.` : ''}
           </div>
         </div>
       </div>
@@ -128,6 +143,12 @@ export default function FileUpload({
                 size={14}
               />
               <span className="upload-name">{r.name}</span>
+              {r.state === 'going' && (
+                <span className="upload-bar" role="progressbar" aria-valuemin={0} aria-valuemax={100}
+                  aria-valuenow={r.pct || 0}>
+                  <span className="upload-bar-fill" style={{ width: `${r.pct || 0}%` }} />
+                </span>
+              )}
               {r.note && <span className="small muted upload-note">{r.note}</span>}
               {r.state !== 'going' && (
                 <button

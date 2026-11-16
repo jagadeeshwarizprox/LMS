@@ -19,8 +19,12 @@ export default function MentorSlots() {
   })
 
   const [room, setRoom] = useState({ joinUrl: '', passcode: '' })
-  const [rec, setRec] = useState({ title: '', videoLink: '', slotId: '', notes: '' })
+  const [rec, setRec] = useState({ title: '', videoLink: '', slotId: '', notes: '', batchId: '' })
   const [recFile, setRecFile] = useState(null)
+  /* the batches this mentor teaches, for sharing a recording with one of them, and the
+     upload ceiling the server will actually apply, so the box can say the real number */
+  const [batches, setBatches] = useState([])
+  const [limits, setLimits] = useState(null)
   const [check, setCheck] = useState(null)
   /* publish and release each post once; a double press made two of them */
   const [busy, setBusy] = useState(null)
@@ -29,6 +33,8 @@ export default function MentorSlots() {
     setRows(await api.get('/mentor/slots'))
     const r = await api.get('/mentor/room')
     if (r.set) setRoom({ joinUrl: r.joinUrl, passcode: r.passcode })
+    api.get('/mentor/batches').then(setBatches).catch(() => setBatches([]))
+    api.get('/files/limits').then(setLimits).catch(() => setLimits(null))
   }
   useEffect(() => { load() }, [])
   if (!rows) return <TableSkeleton />
@@ -60,9 +66,23 @@ export default function MentorSlots() {
   const recLinkProblem = rec.videoLink.trim()
     && !/^https?:\/\/\S+\.\S+/i.test(rec.videoLink.trim())
     && !/^[\w-]{8,}$/.test(rec.videoLink.trim())
-    ? 'Paste the full YouTube or Zoom link.'
+    ? 'Paste the full YouTube or Google Drive link.'
     : null
 
+  /* what the pasted link is, said back before anything is sent, because a Drive folder
+     and a YouTube video are shared and watched differently */
+  const recLinkKind = /drive\.google\.com\/(?:drive\/)?(?:u\/\d+\/)?folders\//i.test(rec.videoLink)
+    ? 'A Google Drive folder. Learners open it in Drive.'
+    : /drive\.google\.com|docs\.google\.com\/file/i.test(rec.videoLink)
+      ? 'A Google Drive video. It plays in Drive’s frame, so share the file with the batch.'
+      : /youtu\.?be/i.test(rec.videoLink) ? 'A YouTube video.' : null
+
+  /*
+   * Sharing with a batch. Without a batch this posts exactly what it always did. With
+   * one, the recording goes out as that batch's induction recording: the kind the
+   * library files under Induction and the audience rule that keeps it to that batch.
+   * The server checks the mentor teaches it, so the list here is only a convenience.
+   */
   const publish = async () => {
     if (recLinkProblem) { toast.push(recLinkProblem, 'bad'); return }
     if (busy) return
@@ -73,10 +93,13 @@ export default function MentorSlots() {
         slotId: rec.slotId || null,
         videoLink: rec.videoLink.trim() || null,
         fileId: recFile?.id || null,
-        coveredSummary: rec.notes || null
+        coveredSummary: rec.notes || null,
+        ...(rec.batchId ? { kind: 'INDUCTION', audience: 'BATCH', batchId: rec.batchId } : {})
       })
-      toast.push('Recording published to the learners who were in that session.')
-      setRec({ title: '', videoLink: '', slotId: '', notes: '' })
+      toast.push(rec.batchId
+        ? 'Shared. Everyone in that batch can watch it now under Recordings.'
+        : 'Recording published to the learners who were in that session.')
+      setRec({ title: '', videoLink: '', slotId: '', notes: '', batchId: '' })
       setRecFile(null)
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
@@ -111,6 +134,51 @@ export default function MentorSlots() {
    * Cancelling tells everyone who booked, which is why it asks for a reason: the
    * reason is the message they get, and "cancelled" on its own helps nobody.
    */
+  /* the link is fetched on the click, never listed: the same rule the learner side keeps */
+  const join = async (r) => {
+    try {
+      const res = await api.post(`/slots/${r.slot.id}/join`)
+      window.open(res.joinUrl, '_blank', 'noopener')
+      if (res.passcode) toast.push(`Passcode ${res.passcode}`)
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
+
+  /*
+   * Confirming the session ran. Nothing automatic can do this: the room is a pasted
+   * link and there is no feed back from it. The host says who was there, and that is
+   * what records attendance and, for an onboarding call, clears the gate.
+   */
+  const markHeld = async (r) => {
+    const names = r.booked.filter(Boolean)
+    const res = await ask({
+      title: 'Mark this session as held',
+      body: names.length === 0
+        ? 'Nobody booked this session. It is recorded as held with no attendance.'
+        : `Booked: ${names.join(', ')}. Everyone is marked present unless you list them below. `
+          + 'This is what clears an onboarding gate, so only confirm once the call has run.',
+      fields: names.length === 0 ? [] : [{
+        name: 'absent', label: 'Anyone who did not turn up', required: false,
+        placeholder: 'Leave empty if everyone came, or name them exactly as above, comma separated'
+      }],
+      confirmLabel: 'Mark as held'
+    })
+    if (!res) return
+    /* names typed back are matched to the booking order the server sent */
+    const absentNames = String(res.absent || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean)
+    const absentLearnerIds = (r.bookedIds || []).filter((id, i) =>
+      absentNames.includes(String(names[i] || '').toLowerCase()))
+    if (absentNames.length > 0 && absentLearnerIds.length !== absentNames.length) {
+      toast.push('One of those names does not match a booking. Use Attendance to mark them.', 'bad')
+      return
+    }
+    try {
+      await api.post(`/mentor/slots/${r.slot.id}/held`, { absentLearnerIds })
+      toast.push(names.length === 0 ? 'Marked as held.'
+        : `Marked as held. ${names.length - absentLearnerIds.length} present.`)
+      await load()
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
+
   const cancel = async (r) => {
     const res = await ask({
       title: 'Cancel this session',
@@ -179,8 +247,8 @@ export default function MentorSlots() {
       </Card>
 
       <Card
-        title="Publish a recording"
-        note="Put it on YouTube as unlisted and paste the link, or upload the file here. The link is stored once and is never shown to a learner."
+        title="Publish or share a recording"
+        note="Paste a YouTube link, a Google Drive video or folder link, or upload the file. Pick a batch to share an onboarding recording with everyone in it. The link is stored once and is never shown to a learner."
       >
         <div className="row g-2 align-items-end">
           <div className="col-md-4">
@@ -188,42 +256,39 @@ export default function MentorSlots() {
             <input className="form-control" value={rec.title}
               onChange={(e) => setRec((r) => ({ ...r, title: e.target.value }))} />
           </div>
-          <div className="col-md-3">
+          <div className="col-md-4">
             <label className="form-label">Recording link</label>
             <input
               className={`form-control ${recLinkProblem ? 'is-invalid' : ''}`}
-              placeholder="https://youtu.be/..."
+              placeholder="https://youtu.be/... or https://drive.google.com/..."
               value={rec.videoLink}
               disabled={!!recFile}
               onChange={(e) => setRec((r) => ({ ...r, videoLink: e.target.value }))}
             />
             {recLinkProblem && <div className="invalid-feedback d-block">{recLinkProblem}</div>}
+            {!recLinkProblem && recLinkKind && <div className="small muted mt-1">{recLinkKind}</div>}
           </div>
-          <div className="col-md-3">
-            <label className="form-label">Session</label>
-            <select className="form-select" value={rec.slotId}
-              onChange={(e) => setRec((r) => ({ ...r, slotId: e.target.value }))}>
-              <option value="">Not linked</option>
-              {rows.map((x) => (
-                <option key={x.slot.id} value={x.slot.id}>{x.slot.kind} {fmtDateTime(x.slot.startsAt)}</option>
+          <div className="col-md-4">
+            <label className="form-label">Share with a batch</label>
+            <select className="form-select" value={rec.batchId}
+              onChange={(e) => setRec((r) => ({ ...r, batchId: e.target.value }))}>
+              <option value="">Not shared with a batch</option>
+              {batches.map((b) => (
+                <option key={b.id} value={b.id}>{b.code || b.name}{b.name && b.code ? ` \u2014 ${b.name}` : ''}</option>
               ))}
             </select>
-          </div>
-          <div className="col-md-2">
-            <button className="btn btn-pib w-100" onClick={publish}
-              disabled={!rec.title || (!rec.videoLink.trim() && !recFile) || busy === 'publish'}>
-              {busy === 'publish' ? 'Publishing\u2026' : 'Publish'}
-            </button>
           </div>
 
           {/* the other half of the choice: a file, for a session nobody put on YouTube */}
           <div className="col-md-6">
-            <label className="form-label">Or upload the recording or its notes</label>
+            <label className="form-label">Or upload the recording file</label>
             <FileUpload
-              purpose="RESOURCE"
+              purpose="RECORDING"
               multiple={false}
-              label="Choose a file"
-              accept=".mp4,.webm,.mov,.m4v,.pdf,.doc,.docx,.ppt,.pptx"
+              label="Choose a video"
+              accept={(limits?.videoExtensions || ['mp4', 'webm', 'mov', 'm4v', 'mkv']).map((x) => `.${x}`).join(',')}
+              maxBytes={limits?.videoMaxBytes}
+              hint="Drop it here, or click to choose. mp4, webm, mov, m4v or mkv."
               onUploaded={(f) => { setRecFile(f); if (!rec.title) setRec((r) => ({ ...r, title: f.filename })) }}
               onRemoved={(f) => setRecFile((cur) => (cur?.id === f.id ? null : cur))}
             />
@@ -234,9 +299,28 @@ export default function MentorSlots() {
             )}
           </div>
 
-          <div className="col-md-6">
-            <label className="form-label">What it covers</label>
+          <div className="col-md-3">
+            <label className="form-label">Session</label>
+            <select className="form-select" value={rec.slotId}
+              onChange={(e) => setRec((r) => ({ ...r, slotId: e.target.value }))}>
+              <option value="">Not linked</option>
+              {rows.map((x) => (
+                <option key={x.slot.id} value={x.slot.id}>{x.slot.kind} {fmtDateTime(x.slot.startsAt)}</option>
+              ))}
+            </select>
+          </div>
+          <div className="col-md-3">
+            <button className="btn btn-pib w-100" onClick={publish}
+              disabled={!rec.title || (!rec.videoLink.trim() && !recFile) || busy === 'publish'}>
+              {busy === 'publish' ? (rec.batchId ? 'Sharing\u2026' : 'Publishing\u2026')
+                : (rec.batchId ? 'Share with batch' : 'Publish')}
+            </button>
+          </div>
+
+          <div className="col-md-12">
+            <label className="form-label">Description</label>
             <input className="form-control" value={rec.notes}
+              placeholder="What it covers. This is what makes it findable later."
               onChange={(e) => setRec((r) => ({ ...r, notes: e.target.value }))} />
           </div>
         </div>
@@ -367,28 +451,43 @@ export default function MentorSlots() {
         {rows.length === 0 ? <Empty title="No slots released yet" /> : (
           <table className="table table-pib mb-0">
             <thead><tr><th>When</th><th>Kind</th><th>For</th><th>Seats</th><th>Booked by</th>
-              <th /><th /></tr></thead>
+              <th>State</th><th /><th /></tr></thead>
             <tbody>
-              {rows.map((r) => (
+              {rows.map((r) => {
+                const future = new Date(r.slot.startsAt) > new Date()
+                const live = !r.slot.cancelled && !r.slot.held
+                return (
                 <tr key={r.slot.id}>
                   <td className="mono">{fmtDateTime(r.slot.startsAt)}</td>
                   <td>{r.slot.kind}</td>
                   <td>{r.slot.trackScope}</td>
                   <td className="mono">{r.booked.length}/{r.slot.capacity}</td>
                   <td>{r.booked.filter(Boolean).join(', ') || '\u2014'}</td>
+                  {/* the session's own state, separate from whether its recording is up */}
+                  <td>
+                    {r.slot.cancelled ? <Tag kind="stop">Cancelled</Tag>
+                      : r.slot.held ? <Tag kind="ok">Held</Tag>
+                      : future ? <Tag kind="wait">Upcoming</Tag>
+                      : <Tag kind="wait">Not confirmed</Tag>}
+                  </td>
                   <td>{r.slot.recordingId ? <span className="tag tag-ok">Published</span> : <span className="small muted">Not yet</span>}</td>
                   <td className="text-end">
-                    {r.slot.cancelled ? (
-                      <Tag kind="stop">Cancelled</Tag>
-                    ) : new Date(r.slot.startsAt) > new Date() ? (
+                    {live && (
+                      <button className="btn btn-quiet" onClick={() => join(r)}>Join</button>
+                    )}
+                    {live && !future && (
+                      <button className="btn btn-quiet ms-2" onClick={() => markHeld(r)}>Mark as held</button>
+                    )}
+                    {live && future && (
                       <>
-                        <button className="btn btn-quiet" onClick={() => move(r)}>Move</button>
+                        <button className="btn btn-quiet ms-2" onClick={() => move(r)}>Move</button>
                         <button className="btn btn-quiet ms-2" onClick={() => cancel(r)}>Cancel</button>
                       </>
-                    ) : null}
+                    )}
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         )}

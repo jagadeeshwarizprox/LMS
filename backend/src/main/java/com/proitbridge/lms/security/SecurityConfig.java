@@ -45,6 +45,14 @@ public class SecurityConfig {
                 /* the check lists rooms and who can get in, so it is staff only, and it
                    has to sit above the join rule or the wildcard swallows it */
                 .requestMatchers("/api/slots/join-check").hasAnyRole("ADMIN", "SUPER_ADMIN")
+                /*
+                 * Playback of an uploaded recording. A <video> element cannot carry the
+                 * bearer header, so this one path is open and the grant id in it is the
+                 * credential: random, tied to one viewer and one video, expiring, and
+                 * issued only after the normal entitlement check behind /grant. It has to
+                 * sit above the /api/video/** rule or that rule swallows it.
+                 */
+                .requestMatchers(HttpMethod.GET, "/api/video/stream/*").permitAll()
                 .requestMatchers("/api/video/**", "/api/faqs/**", "/api/slots/*/join").authenticated()
                 .requestMatchers("/api/learner/**").hasRole("LEARNER")
                 .requestMatchers("/api/mentor/**").hasAnyRole("MENTOR", "ADMIN", "SUPER_ADMIN")

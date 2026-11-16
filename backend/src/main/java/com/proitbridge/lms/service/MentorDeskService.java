@@ -321,6 +321,11 @@ public class MentorDeskService {
                     m.put("booked", bookings.findBySlotId(s.getId()).size());
                     m.put("capacity", s.getCapacity());
                     m.putAll(meetings.windowFor(s));
+                    /* the row is a button now, so it has to say what pressing it will do:
+                       join, or nothing, and why */
+                    m.put("cancelled", s.isCancelled());
+                    m.put("held", s.isHeld());
+                    m.put("durationMin", s.getDurationMin());
                     return m;
                 }).collect(Collectors.toList());
 

@@ -27,6 +27,15 @@ public class FileController {
         this.learners = learners;
     }
 
+    /**
+     * The limits, so the control can refuse a file before sending it rather than after
+     * the whole thing has gone up the wire, and can say the real number in its hint.
+     */
+    @GetMapping("/limits")
+    public Map<String, Object> limits() {
+        return files.limits();
+    }
+
     @PostMapping
     public Map<String, Object> upload(@RequestParam("file") MultipartFile file,
                                       @RequestParam(defaultValue = "TASK") String purpose,

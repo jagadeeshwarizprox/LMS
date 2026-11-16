@@ -217,7 +217,8 @@ export default function LiveBoard() {
                       <span className="board-time mono">{String(s.time).slice(0, 5)}</span>
                       {!s.published && <Tag kind="wait">Draft</Tag>}
                       {s.cancelled && <Tag kind="stop">Cancelled</Tag>}
-                      {s.canEdit && !s.cancelled && (
+                      {s.held && <Tag kind="ok">Held</Tag>}
+                      {s.canEdit && !s.cancelled && !s.held && (
                         <span className="board-acts">
                           <button className="board-act" title="Edit this session"
                             onClick={() => setEditing(s)}>
@@ -541,3 +542,4 @@ function SessionForm({ existing, weekStart, dayIndex, mentors, batches, isAdmin,
     </Drawer>
   )
 }
+

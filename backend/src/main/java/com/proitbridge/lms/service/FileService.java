@@ -66,24 +66,44 @@ public class FileService {
             "dmg", "pkg", "deb", "rpm", "apk", "dll", "so", "dylib", "vbs", "ps1",
             "reg", "lnk", "iso");
 
+    /*
+     * A session recording. These are the only video types accepted, and only under the
+     * RECORDING purpose, which is the one place a video is the deliverable rather than
+     * an attachment. They get their own, larger ceiling. Nothing else on the list above
+     * changes: a learner's task still cannot be a video, and still stops at maxBytes.
+     */
+    public static final Set<String> VIDEO_EXT = Set.of("mp4", "webm", "mov", "m4v", "mkv");
+    public static final String RECORDING = "RECORDING";
+
     private final StoredFileRepository files;
     private final StorageProvider storage;
     private final long maxBytes;
+    private final long videoMaxBytes;
 
     public FileService(StoredFileRepository files, StorageProvider storage,
-                       @Value("${lms.files.max-bytes}") long maxBytes) {
+                       @Value("${lms.files.max-bytes}") long maxBytes,
+                       @Value("${lms.files.video-max-bytes:524288000}") long videoMaxBytes) {
         this.files = files;
         this.storage = storage;
         this.maxBytes = maxBytes;
+        this.videoMaxBytes = videoMaxBytes;
+    }
+
+    public long maxBytes() { return maxBytes; }
+    public long videoMaxBytes() { return videoMaxBytes; }
+
+    /** What the client may show before it starts: the limits, and which types are video. */
+    public Map<String, Object> limits() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("maxBytes", maxBytes);
+        m.put("videoMaxBytes", videoMaxBytes);
+        m.put("videoExtensions", new ArrayList<>(new java.util.TreeSet<>(VIDEO_EXT)));
+        return m;
     }
 
     public StoredFile store(MultipartFile upload, String ownerId, String purpose, String linkedId) {
         if (upload == null || upload.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No file was attached.");
-        }
-        if (upload.getSize() > maxBytes) {
-            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
-                    "That file is larger than " + (maxBytes / (1024 * 1024)) + " MB.");
         }
         String type = upload.getContentType() == null ? "" : upload.getContentType();
         String ext = extensionOf(upload.getOriginalFilename());
@@ -95,10 +115,33 @@ public class FileService {
             throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE,
                     "A ." + ext + " file is a program, and those are never accepted here.");
         }
-        if (!ALLOWED_EXT.contains(ext)) {
+        /*
+         * The type decides the ceiling, so it is checked first: a 300 MB .zip should hear
+         * that it is too large for a submission, and a 300 MB .mp4 handed in as a task
+         * should hear that a task cannot be a video, not that it is too large.
+         */
+        boolean video = VIDEO_EXT.contains(ext);
+        boolean recording = RECORDING.equals(purpose);
+        if (video && !recording) {
+            throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE,
+                    "A ." + ext + " video can only be uploaded as a session recording.");
+        }
+        if (recording && !video) {
+            throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE,
+                    "A recording is a video file: " + String.join(", ", new java.util.TreeSet<>(VIDEO_EXT))
+                    + ". Slides and notes go on as materials.");
+        }
+        if (!video && !ALLOWED_EXT.contains(ext)) {
             throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE,
                     "A ." + ext + " file is not accepted. Notebooks, scripts, documents, "
                     + "sheets, slides, images and archives are.");
+        }
+        long ceiling = video ? videoMaxBytes : maxBytes;
+        if (upload.getSize() > ceiling) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                    (video ? "That recording is larger than " : "That file is larger than ")
+                    + (ceiling / (1024 * 1024)) + " MB, which is the limit for "
+                    + (video ? "a recording." : "a file."));
         }
 
         /* the key is random and generated here: never the filename, never guessable,
@@ -128,6 +171,11 @@ public class FileService {
 
     public byte[] read(String id) {
         return storage.get(meta(id).getStorageKey());
+    }
+
+    /** The file on disk for range serving, or null when the provider is not a disk. */
+    public java.nio.file.Path localPath(String id) {
+        return storage.localPath(meta(id).getStorageKey());
     }
 
     /**

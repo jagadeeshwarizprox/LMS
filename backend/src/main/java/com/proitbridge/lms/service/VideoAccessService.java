@@ -108,12 +108,48 @@ public class VideoAccessService {
         log.setExpiresAt(Instant.now().plusSeconds(g.ttlSeconds()));
         logs.save(log);
 
+        /*
+         * An uploaded recording is served by this server, and a <video> element cannot
+         * send the bearer header. The log row just written is the ticket: its id is
+         * random, it names the viewer and the video, and it expires. The stream endpoint
+         * checks it on every byte range, so the address stops working when the grant does.
+         */
+        String playbackUrl = "UPLOAD".equals(g.provider())
+                ? "/api/video/stream/" + log.getId()
+                : g.playbackUrl();
+
         return Map.of(
                 "provider", g.provider(),
                 "playbackId", g.playbackId() == null ? "" : g.playbackId(),
-                "playbackUrl", g.playbackUrl() == null ? "" : g.playbackUrl(),
+                "playbackUrl", playbackUrl == null ? "" : playbackUrl,
                 "ttlSeconds", g.ttlSeconds(),
                 "title", v.getTitle() == null ? "" : v.getTitle());
+    }
+
+    /**
+     * The stored file behind a stream ticket, or a refusal.
+     *
+     * No session is required here, because the player cannot present one. Everything
+     * the session would have proved was proved when the grant was issued: the log row
+     * only exists for a viewer who passed the entitlement check, for this one video,
+     * and it carries its own expiry. A rotated or deactivated video stops streaming on
+     * the next range request, which is as close to revocable as a file gets.
+     */
+    public String streamFileFor(String grantId) {
+        VideoAccessLog log = grantId == null ? null : logs.findById(grantId).orElse(null);
+        if (log == null || !"GRANTED".equals(log.getOutcome())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "That playback link is not valid.");
+        }
+        if (log.getExpiresAt() == null || log.getExpiresAt().isBefore(Instant.now())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "That playback link has expired. Press play again.");
+        }
+        Video v = videos.findById(log.getVideoId()).orElse(null);
+        if (v == null || !v.isActive() || !"UPLOAD".equals(v.getProvider())
+                || v.getExternalId() == null || v.getExternalId().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "That recording is no longer available.");
+        }
+        return v.getExternalId();
     }
 
     private final Map<String, String> streamSession = new ConcurrentHashMap<>();

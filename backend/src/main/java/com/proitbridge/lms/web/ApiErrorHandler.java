@@ -23,6 +23,24 @@ public class ApiErrorHandler {
     }
 
     /**
+     * An upload past Spring's multipart ceiling is refused before any controller runs,
+     * so FileService never gets to say what the limit is. It reached the screen as
+     * "Something went wrong on our side (MaxUploadSizeExceededException: Maximum upload
+     * size exceeded)", which names the exception and not the fix. This says both, as the
+     * 413 it is, so the upload control can show it against the file that caused it.
+     */
+    @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+    public ResponseEntity<Map<String, Object>> tooLarge(
+            org.springframework.web.multipart.MaxUploadSizeExceededException e) {
+        long max = e.getMaxUploadSize();
+        String limit = max > 0 ? (max / (1024 * 1024)) + " MB" : "the configured limit";
+        return ResponseEntity.status(413)
+                .body(Map.of("error", "That file is larger than " + limit
+                        + ", which is the most this server accepts in one upload. "
+                        + "Compress it, trim it, or ask the office to raise UPLOAD_MAX_FILE_SIZE."));
+    }
+
+    /**
      * An unexpected failure used to vanish: no log line was written anywhere, and the
      * only thing the client showed was "Something went wrong on our side". A mentor
      * reporting a blank screen gave nobody a way to find out why.

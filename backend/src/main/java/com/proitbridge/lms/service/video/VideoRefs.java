@@ -36,6 +36,39 @@ public final class VideoRefs {
             Pattern.compile("^([0-9a-f]{32})$")
     );
 
+    /*
+     * Google Drive. A file link comes as /file/d/ID/view, /file/d/ID/preview, open?id=ID
+     * or uc?id=ID depending on which button was pressed; a folder as /drive/folders/ID,
+     * sometimes with /u/0/ in the middle. Drive ids are long and mixed case, so the
+     * pattern asks for at least twenty of the characters they use rather than a length.
+     */
+    private static final List<Pattern> DRIVE_FILE = List.of(
+            Pattern.compile("drive\\.google\\.com/file/d/([\\w-]{20,})"),
+            Pattern.compile("drive\\.google\\.com/(?:open|uc)\\?(?:.*&)?id=([\\w-]{20,})"),
+            Pattern.compile("docs\\.google\\.com/file/d/([\\w-]{20,})")
+    );
+    private static final List<Pattern> DRIVE_FOLDER = List.of(
+            Pattern.compile("drive\\.google\\.com/(?:drive/)?(?:u/\\d+/)?folders/([\\w-]{20,})")
+    );
+
+    /**
+     * Which provider a pasted link belongs to, when the form did not say.
+     *
+     * The publish form takes one box for "the link", and a mentor pastes whatever they
+     * have. Drive links were refused outright with instructions to upload to YouTube,
+     * which is how onboarding recordings never reached the batch they were made for.
+     * Drive is now read for what it is; anything that is not Drive or Cloudflare is
+     * handed to the YouTube parser, which still explains the shapes it does not take.
+     */
+    public static String detectProvider(String input, String fallback) {
+        if (input == null) return fallback;
+        String raw = input.trim();
+        for (Pattern p : DRIVE_FOLDER) if (p.matcher(raw).find()) return "GOOGLE_DRIVE_FOLDER";
+        for (Pattern p : DRIVE_FILE) if (p.matcher(raw).find()) return "GOOGLE_DRIVE";
+        if (raw.contains("cloudflarestream.com") || raw.contains("videodelivery.net")) return "CLOUDFLARE_STREAM";
+        return fallback == null ? "YOUTUBE" : fallback;
+    }
+
     public static String parse(String input, String provider) {
         if (input == null || input.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Paste the video link or id.");
@@ -46,7 +79,12 @@ public final class VideoRefs {
         Matcher iframe = Pattern.compile("src=[\"']([^\"']+)[\"']").matcher(raw);
         if (iframe.find()) raw = iframe.group(1);
 
-        List<Pattern> patterns = "CLOUDFLARE_STREAM".equals(provider) ? CLOUDFLARE : YOUTUBE;
+        List<Pattern> patterns = switch (provider == null ? "YOUTUBE" : provider) {
+            case "CLOUDFLARE_STREAM" -> CLOUDFLARE;
+            case "GOOGLE_DRIVE" -> DRIVE_FILE;
+            case "GOOGLE_DRIVE_FOLDER" -> DRIVE_FOLDER;
+            default -> YOUTUBE;
+        };
         for (Pattern p : patterns) {
             Matcher m = p.matcher(raw);
             if (m.find()) return m.group(1);
@@ -57,14 +95,23 @@ public final class VideoRefs {
                     "That is not a Cloudflare Stream video. Paste the link from the dashboard, "
                     + "or the 32 character uid.");
         }
+        if ("GOOGLE_DRIVE".equals(provider) || "GOOGLE_DRIVE_FOLDER".equals(provider)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "That Drive link has no file or folder id in it. Use Share, copy the link, "
+                    + "and paste the whole thing.");
+        }
         if (raw.contains("youtube.com/playlist") || raw.contains("list=")) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "That is a playlist, not a video. Open the video itself and copy its link.");
         }
-        if (raw.contains("drive.google.com") || raw.contains("vimeo.com")) {
+        if (raw.contains("drive.google.com")) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "Only YouTube and Cloudflare Stream play here. Upload to YouTube as unlisted "
-                    + "and paste that link.");
+                    "That Drive link has no file or folder id in it. Use Share, copy the link, "
+                    + "and paste the whole thing.");
+        }
+        if (raw.contains("vimeo.com")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "YouTube, Google Drive and Cloudflare Stream play here. Vimeo does not.");
         }
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                 "That does not look like a YouTube video. Paste the link from the address bar "

@@ -25,7 +25,9 @@ ENV API_UPSTREAM=http://api:8080
 # the host's resolver (for example 8.8.8.8, or the platform's internal DNS)
 ENV NGINX_RESOLVER=127.0.0.11
 # only these are substituted, so nginx's own $variables are left alone
-ENV NGINX_ENVSUBST_FILTER="^(PORT|API_UPSTREAM|NGINX_RESOLVER)$"
+# the most one upload may be. Keep it at or above the API's UPLOAD_MAX_REQUEST_SIZE.
+ENV UPLOAD_MAX_BODY=530m
+ENV NGINX_ENVSUBST_FILTER="^(PORT|API_UPSTREAM|NGINX_RESOLVER|UPLOAD_MAX_BODY)$"
 COPY --from=build /src/dist /usr/share/nginx/html
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 HEALTHCHECK --interval=15s --timeout=5s --retries=5 CMD wget -q -O /dev/null http://127.0.0.1:${PORT}/ || exit 1

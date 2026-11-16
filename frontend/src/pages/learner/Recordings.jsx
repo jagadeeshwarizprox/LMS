@@ -12,7 +12,7 @@ const KIND = {
   DOUBT: { label: 'Doubt clearing', note: 'Open to every batch, so these are worth browsing.' },
   PROJECT: { label: 'Project sessions', note: '' },
   INDUSTRY: { label: 'Industry sessions', note: '' },
-  INDUCTION: { label: 'Induction', note: '' },
+  INDUCTION: { label: 'Induction and onboarding', note: 'Shared with your batch by your mentor.' },
   MOCK_DEBRIEF: { label: 'Mock debriefs', note: '' }
 }
 

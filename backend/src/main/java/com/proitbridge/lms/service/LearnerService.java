@@ -1061,10 +1061,21 @@ public class LearnerService {
          * each row then looked up its mentor, its seat count and the learner's booking on
          * its own. Those are now one read each for the whole list.
          */
-        List<Slot> upcoming = mongo.find(Query.query(Criteria.where("startsAt").gt(Instant.now())
+        /*
+         * "Future" was startsAt after now, which dropped a session the moment it started.
+         * The join window stays open through the session and a little after, so a learner
+         * who was two minutes late, or who reloaded the page, found the row gone and no
+         * way back in. The read now reaches back far enough to cover any session still
+         * inside its window, and the window itself decides below.
+         */
+        Instant now = Instant.now();
+        List<Slot> upcoming = mongo.find(Query.query(Criteria.where("startsAt").gt(now.minus(6, ChronoUnit.HOURS))
                         .and("trackScope").in(List.of(scope, "BOTH"))
                         .and("open").is(true).and("published").ne(false))
-                .with(Sort.by(Sort.Direction.ASC, "startsAt")), Slot.class);
+                .with(Sort.by(Sort.Direction.ASC, "startsAt")), Slot.class).stream()
+                .filter(s -> s.getStartsAt().isAfter(now)
+                        || ((Instant) meetings.windowFor(s).get("closesAt")).isAfter(now))
+                .collect(Collectors.toList());
         Map<String, String> mentorNames = new HashMap<>();
         users.findAllById(upcoming.stream().map(Slot::getMentorId).filter(Objects::nonNull)
                 .collect(Collectors.toSet())).forEach(u -> mentorNames.put(u.getId(), u.getFullName()));

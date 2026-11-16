@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api } from '../api/client'
+import { api, API_ORIGIN } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
 /**
@@ -88,10 +88,18 @@ export default function SecurePlayer({ videoRef, onProgress, onEnded, poster, tr
   const lastTime = useRef(null)
   const hideTimer = useRef(null)
 
-  const [state, setState] = useState('idle')   // idle | loading | playing | error
+  const [state, setState] = useState('idle')   // idle | loading | playing | external | error
   const [error, setError] = useState('')
   const [mark, setMark] = useState(0)
   const [resume, setResume] = useState(null)
+  /*
+   * A grant that is not YouTube. The shell below is built around YouTube's player: the
+   * shield, the custom bar and the keyboard all drive the IFrame API. A Google Drive
+   * frame and a file served by this server have their own controls and no API to drive,
+   * so they render in their own branch with the watermark kept and the chrome left out.
+   */
+  const [external, setExternal] = useState(null)   // { provider, url, title }
+  const native = useRef(null)
 
   const [playing, setPlaying] = useState(false)
   const [at, setAt] = useState(0)
@@ -144,7 +152,7 @@ export default function SecurePlayer({ videoRef, onProgress, onEnded, poster, tr
 
   /* the watermark moves, so a crop or a corner cover cannot lose it */
   useEffect(() => {
-    if (state !== 'playing') return
+    if (state !== 'playing' && state !== 'external') return
     const id = setInterval(() => setWmSlot((n) => (n + 1) % 4), 9000)
     return () => clearInterval(id)
   }, [state])
@@ -167,8 +175,31 @@ export default function SecurePlayer({ videoRef, onProgress, onEnded, poster, tr
     setState('loading')
     try {
       const grant = await api.post(`/video/${videoRef}/grant`)
-      const YT = await loadYouTubeApi()
       const startAt = fromStart ? 0 : (resume?.seconds || 0)
+
+      /* not YouTube: hand it to the branch that knows how to show it */
+      if (grant.provider === 'GOOGLE_DRIVE_FOLDER') {
+        window.open(grant.playbackUrl, '_blank', 'noopener')
+        setExternal({ provider: grant.provider, url: grant.playbackUrl, title: grant.title })
+        setState('external')
+        return
+      }
+      if (grant.provider === 'GOOGLE_DRIVE') {
+        setExternal({ provider: grant.provider, url: grant.playbackUrl, title: grant.title })
+        setState('external')
+        return
+      }
+      if (grant.provider === 'UPLOAD') {
+        const url = grant.playbackUrl.startsWith('http') ? grant.playbackUrl : API_ORIGIN + grant.playbackUrl
+        setExternal({ provider: grant.provider, url, title: grant.title, startAt })
+        played.current = 0
+        lastTime.current = startAt
+        reachedFrac.current = fromStart ? 0 : Math.min(1, (resume?.reached || 0) / 100)
+        setState('external')
+        return
+      }
+
+      const YT = await loadYouTubeApi()
       player.current = new YT.Player(host.current, {
         videoId: grant.playbackId,
         host: 'https://www.youtube-nocookie.com',
@@ -359,7 +390,81 @@ export default function SecurePlayer({ videoRef, onProgress, onEnded, poster, tr
         </div>
       )}
 
-      <div className={`player-frame ${state === 'playing' ? 'live' : ''}`}>
+      {state === 'external' && external?.provider === 'GOOGLE_DRIVE_FOLDER' && (
+        <div className="player-cover as-div">
+          <span className="player-cover-label">Opened in Google Drive</span>
+          <span className="player-cover-note">
+            This is a folder of recordings, so it opens in Drive in a new tab. If it did
+            not appear, the browser blocked the pop-up.
+          </span>
+          <button className="player-restart mt-2"
+            onClick={() => window.open(external.url, '_blank', 'noopener')}>
+            Open the folder again
+          </button>
+        </div>
+      )}
+
+      {state === 'external' && external?.provider === 'GOOGLE_DRIVE' && (
+        <div className="player-frame player-frame-ext live">
+          {/* Drive's own frame and controls; access on Drive's side is the mentor's share */}
+          <iframe
+            src={external.url}
+            title={external.title || 'Recording'}
+            allow="autoplay; fullscreen; encrypted-media"
+            allowFullScreen
+          />
+          <div className={`wm wm-slot-${wmSlot}`} style={{ pointerEvents: 'none' }}>{watermark}</div>
+        </div>
+      )}
+
+      {state === 'external' && external?.provider === 'UPLOAD' && (
+        <div className="player-frame player-frame-ext live" onContextMenu={swallow}>
+          {/*
+            * A file served by this server, in the browser's own player. The address
+            * carries a grant that expires, so saving it buys nothing lasting. The same
+            * position and progress tracking as YouTube runs off the element's clock.
+            */}
+          <video
+            ref={(el) => {
+              native.current = el
+              if (!el) return
+              player.current = {
+                getDuration: () => el.duration || 0,
+                getCurrentTime: () => el.currentTime || 0,
+                getVideoLoadedFraction: () => (el.buffered.length && el.duration
+                  ? el.buffered.end(el.buffered.length - 1) / el.duration : 0),
+                getPlaybackRate: () => el.playbackRate || 1,
+                seekTo: (s) => { el.currentTime = s },
+                destroy: () => { try { el.pause() } catch { /* already gone */ } }
+              }
+            }}
+            src={external.url}
+            controls
+            controlsList="nodownload"
+            playsInline
+            autoPlay
+            onLoadedMetadata={(e) => {
+              if (external.startAt > 0 && external.startAt < e.target.duration) e.target.currentTime = external.startAt
+              setDur(e.target.duration || 0)
+              setWmSlot(0)
+              poll()
+            }}
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
+            onEnded={(e) => {
+              setPlaying(false)
+              const d = e.target.duration || 0
+              if (d > 0 && watchedPct(d) >= 95) report(100)
+              onEnded?.()
+            }}
+            onError={() => { setError('This recording could not be loaded. Reload the page and try again.'); setState('error') }}
+          />
+          <div className={`wm wm-slot-${wmSlot}`} style={{ pointerEvents: 'none' }}>{watermark}</div>
+        </div>
+      )}
+
+      <div className={`player-frame ${state === 'playing' ? 'live' : ''}`}
+        style={state === 'external' ? { display: 'none' } : undefined}>
         <div ref={host} />
 
         {state === 'playing' && (

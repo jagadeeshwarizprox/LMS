@@ -6,6 +6,7 @@ public class HttpHeaders {
     public static final String CONTENT_LENGTH="Content-Length";
     public static final String AUTHORIZATION="Authorization";
     public static final String CACHE_CONTROL="Cache-Control";
+    public static final String ACCEPT_RANGES="Accept-Ranges";
     public void add(String k,String v){}
     public void set(String k,String v){}
     public String getFirst(String k){return null;}

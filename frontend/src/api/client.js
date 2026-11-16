@@ -1,4 +1,7 @@
 const BASE = import.meta.env.VITE_API_BASE || '/api'
+/* the API's origin, for an address the server hands back as /api/... that a media
+   element has to load on its own (it cannot go through request() and its headers) */
+export const API_ORIGIN = BASE.replace(/\/api\/?$/, '')
 
 let token = localStorage.getItem('pib.token') || null
 
@@ -131,6 +134,50 @@ export async function downloadFile(id, filename) {
   a.click()
   a.remove()
   URL.revokeObjectURL(url)
+}
+
+/**
+ * An upload that reports progress.
+ *
+ * fetch cannot say how much of a request body has gone, and a 500 MB recording over a
+ * home uplink takes minutes, during which the control said "Uploading" and nothing
+ * else. XMLHttpRequest has had upload progress events since before fetch existed, so
+ * this is the same request with those wired up. Everything else is kept the same as
+ * request(): the headers, the error shape, and the signed-out signal on a 401.
+ *
+ * A proxy in front of the API answers a too-large body with its own page rather than
+ * JSON, so the error is read from the status when the body does not parse.
+ */
+export function uploadWithProgress(path, formData, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${BASE}${path}`)
+    xhr.setRequestHeader('X-Device-Id', deviceId())
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100), e.loaded, e.total)
+    }
+    xhr.onerror = () => reject(new Error('The upload was interrupted. Check the connection and try again.'))
+    xhr.onabort = () => reject(new Error('The upload was cancelled.'))
+    xhr.onload = () => {
+      let data = null
+      try { data = xhr.responseText ? JSON.parse(xhr.responseText) : null } catch { data = null }
+      if (xhr.status >= 200 && xhr.status < 300) { resolve(data); return }
+      if (xhr.status === 401) {
+        setToken(null)
+        window.dispatchEvent(new CustomEvent('pib:signed-out', { detail: { replaced: false } }))
+        reject(new Error('Your session ended. Sign in again.'))
+        return
+      }
+      const fallback = xhr.status === 413
+        ? 'That file is larger than the server accepts in one upload.'
+        : 'That upload did not go through.'
+      const err = new Error(data?.detail ? `${data.error || fallback} (${data.detail})` : (data?.error || fallback))
+      err.status = xhr.status
+      reject(err)
+    }
+    xhr.send(formData)
+  })
 }
 
 export const api = {
