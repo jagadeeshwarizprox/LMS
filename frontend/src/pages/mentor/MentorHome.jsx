@@ -62,6 +62,9 @@ export default function MentorHome() {
 
   const [day, setDay] = useState(null)
   const [doubts, setDoubts] = useState([])
+  /* the slot whose "mark as held" dialog is open; declared here, above the early return,
+     because a hook after it changes the hook count between renders and blanks the app */
+  const [holding, setHolding] = useState(null)
 
   const load = async () => {
     setData(await api.get('/mentor/dashboard'))
@@ -88,7 +91,6 @@ export default function MentorHome() {
 
   /* confirming the call happened is a separate act from joining it: the dialog says who
      was there, and that is what records attendance and clears the onboarding gate */
-  const [holding, setHolding] = useState(null)
   const afterHeld = async () => setDay(await api.get('/mentor/day').catch(() => day))
 
   const review = async (kind, id) => {

@@ -29,6 +29,9 @@ export default function MentorSlots() {
   const [check, setCheck] = useState(null)
   /* publish and release each post once; a double press made two of them */
   const [busy, setBusy] = useState(null)
+  /* the slot whose "mark as held" dialog is open; above the early return so the hook
+     count is the same on every render */
+  const [holding, setHolding] = useState(null)
 
   const load = async () => {
     setRows(await api.get('/mentor/slots'))
@@ -148,9 +151,8 @@ export default function MentorSlots() {
    * Confirming the session ran. Nothing automatic can do this: the room is a pasted
    * link and there is no feed back from it. The host says who was there, in the same
    * dialog the desk uses, and that is what records attendance and, for an onboarding
-   * call, clears the gate.
+   * call, clears the gate. (The dialog's state, `holding`, is declared at the top.)
    */
-  const [holding, setHolding] = useState(null)
 
   const cancel = async (r) => {
     const res = await ask({
