@@ -18,6 +18,25 @@ const KINDS = [
 const KIND = Object.fromEntries(KINDS.map(([k, label, icon]) => [k, { label, icon }]))
 const FILE_KINDS = ['NOTES', 'CODE', 'DATASET', 'SLIDES']
 
+/*
+ * What each kind of file actually is. A notebook filed as Notes opened in the reader
+ * as a wall of JSON, because nothing checked that the button pressed matched the file
+ * chosen. The server keeps the same table, so the rule holds for any client.
+ */
+const EXT = {
+  NOTES: ['pdf', 'doc', 'docx', 'odt', 'rtf', 'txt', 'md', 'html',
+    'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'tif', 'tiff'],
+  CODE: ['ipynb', 'py', 'r', 'rmd', 'sql', 'js', 'ts', 'java', 'c', 'cpp', 'cs', 'go', 'rb',
+    'php', 'sh', 'css', 'scala', 'm', 'jl', 'zip', 'tar', 'gz', 'tgz', '7z', 'rar'],
+  DATASET: ['csv', 'tsv', 'xls', 'xlsx', 'ods', 'json', 'xml', 'yaml', 'yml', 'parquet',
+    'pbix', 'pbit', 'twb', 'twbx', 'qvf'],
+  SLIDES: ['ppt', 'pptx', 'odp']
+}
+const ACCEPT = Object.fromEntries(FILE_KINDS.map((k) => [k, EXT[k].map((e) => `.${e}`).join(',')]))
+const extOf = (name) => (name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : '')
+/** the kind a dropped file belongs under, from its extension; null when it is not a file we take */
+const kindFor = (name) => FILE_KINDS.find((k) => EXT[k].includes(extOf(name))) || null
+
 const size = (b) => (b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024)} KB`)
 
 /**
@@ -103,21 +122,47 @@ export default function ResourceList({ topicId, onChanged }) {
     } catch (e) { toast.push(e.message, 'bad') }
   }
 
-  /** Files can be dropped in a handful at a time; each becomes its own resource. */
-  const takeFiles = async (fileList, kind = 'NOTES') => {
+  /**
+   * Files can be dropped in a handful at a time; each becomes its own resource.
+   *
+   * With a kind (a button was pressed) every file must be that kind of file, and the
+   * ones that are not are named and left out. Without one (dropped) each file is filed
+   * under the kind its extension says, so a notebook lands under Code whichever way
+   * it arrived.
+   */
+  const takeFiles = async (fileList, kind = null) => {
     const files = [...fileList]
     if (files.length === 0) return
+    const groups = {}
+    const refused = []
+    for (const f of files) {
+      const k = kind || kindFor(f.name)
+      if (!k || !EXT[k].includes(extOf(f.name))) {
+        const should = kindFor(f.name)
+        refused.push(should
+          ? `${f.name} is a ${KIND[should].label.toLowerCase()} file; add it under ${KIND[should].label}.`
+          : `${f.name} is not a file type learners can open here.`)
+        continue
+      }
+      ;(groups[k] = groups[k] || []).push(f)
+    }
+    refused.forEach((m) => toast.push(m, 'bad'))
+    if (Object.keys(groups).length === 0) return
     setBusy(true)
     try {
-      const uploaded = []
-      for (const f of files) {
-        const fd = new FormData()
-        fd.append('file', f)
-        const r = await api.upload(`/files?purpose=RESOURCE&linkedId=${topicId}`, fd)
-        uploaded.push({ id: r.id, filename: r.filename })
+      let n = 0
+      for (const [k, list] of Object.entries(groups)) {
+        const uploaded = []
+        for (const f of list) {
+          const fd = new FormData()
+          fd.append('file', f)
+          const r = await api.upload(`/files?purpose=RESOURCE&linkedId=${topicId}`, fd)
+          uploaded.push({ id: r.id, filename: r.filename })
+        }
+        await api.post(`/super/catalogue/topics/${topicId}/resources/bulk`, { files: uploaded, kind: k })
+        n += uploaded.length
       }
-      await api.post(`/super/catalogue/topics/${topicId}/resources/bulk`, { files: uploaded, kind })
-      after(`${uploaded.length} file${uploaded.length > 1 ? 's' : ''} attached.`)
+      after(`${n} file${n > 1 ? 's' : ''} attached.`)
     } catch (e) {
       toast.push(e.message, 'bad')
     } finally { setBusy(false) }
@@ -155,6 +200,15 @@ export default function ResourceList({ topicId, onChanged }) {
   }
 
   const remove = async (r) => {
+    const ok = await ask({
+      title: `Remove ${r.title}?`,
+      body: r.fileId
+        ? 'It comes off this topic for every learner. The uploaded file itself is kept.'
+        : 'It comes off this topic for every learner.',
+      confirmLabel: 'Remove',
+      intent: 'danger'
+    })
+    if (!ok) return
     try {
       await api.del(`/super/catalogue/resources/${r.id}`)
       after('Removed.')
@@ -183,7 +237,13 @@ export default function ResourceList({ topicId, onChanged }) {
               if (k === 'VIDEO') addVideo()
               else if (k === 'LINK') addLink()
               else if (k === 'TEXT') addText()
-              else { picker.current.dataset.kind = k; picker.current.click() }
+              else {
+                /* the picker only offers that kind's file types, so a notebook is not
+                   on the list when Notes was pressed */
+                picker.current.dataset.kind = k
+                picker.current.accept = ACCEPT[k]
+                picker.current.click()
+              }
             }}
           >
             <Icon name={icon} size={16} />
@@ -195,7 +255,7 @@ export default function ResourceList({ topicId, onChanged }) {
           type="file"
           multiple
           hidden
-          onChange={(e) => { takeFiles(e.target.files, picker.current.dataset.kind || 'NOTES'); e.target.value = '' }}
+          onChange={(e) => { takeFiles(e.target.files, picker.current.dataset.kind || null); e.target.value = '' }}
         />
       </div>
 

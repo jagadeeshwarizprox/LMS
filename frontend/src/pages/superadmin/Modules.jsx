@@ -156,20 +156,29 @@ export default function Modules() {
 
             {isOpen && (
               <div className="tree-kids">
-                {!needle && tree.modules.length > 1 && (
-                  <div className="d-flex gap-2 justify-content-end px-2 pb-2">
-                    <span className="tiny muted align-self-center me-auto">
-                      Position {i + 1} of {tree.modules.length}
-                    </span>
-                    <button className="btn btn-s" disabled={i === 0} onClick={() => move(m, -1)}>
-                      <Icon name="up" size={14} /> Move up
-                    </button>
-                    <button className="btn btn-s" disabled={i === tree.modules.length - 1}
-                      onClick={() => move(m, 1)}>
-                      <Icon name="down" size={14} /> Move down
-                    </button>
-                  </div>
-                )}
+                {/* the module's own page is where it is renamed, released, deleted and
+                    given chapters; it was only reachable from a course before */}
+                <div className="d-flex gap-2 justify-content-end px-2 pb-2 flex-wrap">
+                  <span className="tiny muted align-self-center me-auto">
+                    {!needle && tree.modules.length > 1
+                      ? `Position ${i + 1} of ${tree.modules.length}`
+                      : m.description || ''}
+                  </span>
+                  {!needle && tree.modules.length > 1 && (
+                    <>
+                      <button className="btn btn-s" disabled={i === 0} onClick={() => move(m, -1)}>
+                        <Icon name="up" size={14} /> Move up
+                      </button>
+                      <button className="btn btn-s" disabled={i === tree.modules.length - 1}
+                        onClick={() => move(m, 1)}>
+                        <Icon name="down" size={14} /> Move down
+                      </button>
+                    </>
+                  )}
+                  <button className="btn btn-s" onClick={() => nav(`/super/modules/${m.id}`)}>
+                    Open module
+                  </button>
+                </div>
                 {m.chapters.map((c, j) => (
                   <button className="kid" key={c.id} onClick={() => nav(`/super/chapters/${c.id}`)}>
                     <span className="mono tiny" style={{ color: 'var(--ink-30)' }}>C{j + 1}</span>

@@ -201,7 +201,10 @@ public class ScheduleService {
      * pausing it, and only the fields actually sent are written onto it. A new one from
      * a mentor is always theirs.
      */
-    public SessionSchedule saveFromBoard(Map<String, Object> body, String userId, String role) {
+    /** What a save did beyond the schedule itself: how the already generated slots were handled. */
+    public record ScheduleSaved(SessionSchedule schedule, String note) {}
+
+    public ScheduleSaved saveFromBoard(Map<String, Object> body, String userId, String role) {
         boolean admin = "ADMIN".equals(role) || "SUPER_ADMIN".equals(role);
         Map<String, Object> patch = new LinkedHashMap<>();
         body.forEach((k, v) -> {
@@ -220,6 +223,8 @@ public class ScheduleService {
             SessionSchedule stored = schedules.findById(id).orElseThrow();
             String oldHost = stored.getMentorId();
             String oldRoom = stored.getRoomId();
+            int oldWeekday = stored.getWeekday();
+            String oldStart = stored.getStartTime();
             applySchedule(stored, patch);
             /* handing a schedule to another host left it pointing at the old host's standing
                room, so learners joined the wrong mentor's call. A room chosen on purpose (sent
@@ -230,8 +235,10 @@ public class ScheduleService {
                 stored.setRoomId(standingRoom(newHost).map(MeetingRoom::getId).orElse(null));
             }
             SessionSchedule saved = schedules.save(stored);
+            String note = resyncFutureSlots(saved,
+                    oldWeekday != saved.getWeekday() || !Objects.equals(oldStart, saved.getStartTime()));
             generate();
-            return saved;
+            return new ScheduleSaved(saved, note);
         }
 
         assertMayEdit(userId, role, admin ? null : (String) body.get("mentorId"));
@@ -241,7 +248,54 @@ public class ScheduleService {
             fresh.setMentorId(userId);
             fresh.setHostRotation(new ArrayList<>());
         }
-        return saveFromBoard(fresh);
+        return new ScheduleSaved(saveFromBoard(fresh), "Added. The next two weeks of slots are live.");
+    }
+
+    /**
+     * What happens to the slots already generated when a schedule is edited.
+     *
+     * generate() is idempotent on the old key, so an edited time used to leave the next
+     * two weeks standing at the old time and add a second set at the new one. Future
+     * slots of the schedule that nobody has booked are brought in line: moved slots are
+     * dropped and regenerated at the new time, and the other fields (length, seats,
+     * kind, audience, topic, speaker) are rewritten in place. A slot somebody has
+     * booked, or one already held or cancelled, is left exactly as it is and counted,
+     * because a learner's booking is a promise about a time.
+     */
+    private String resyncFutureSlots(SessionSchedule sc, boolean timeChanged) {
+        List<Slot> future = mongo.find(Query.query(Criteria.where("scheduleId").is(sc.getId())
+                .and("startsAt").gt(Instant.now())), Slot.class);
+        int moved = 0, updated = 0, kept = 0;
+        for (Slot s : future) {
+            if (s.isCancelled() || s.isHeld()) continue;
+            boolean booked = bookings.findBySlotId(s.getId()).stream()
+                    .anyMatch(b -> !"CANCELLED".equals(b.getStatus()));
+            if (booked) { kept++; continue; }
+            if (timeChanged) {
+                /* its generatedKey leaves with it, so the old time is not refilled */
+                slots.delete(s);
+                moved++;
+                continue;
+            }
+            s.setDurationMin(sc.getDurationMin());
+            s.setCapacity(sc.getCapacity());
+            s.setKind(sc.getKind());
+            s.setTrackScope(sc.getTrackScope());
+            s.setBatchId(sc.getBatchId());
+            s.setOpenToAllBatches(sc.isOpenToAllBatches());
+            s.setTopic(sc.getTopic());
+            s.setSpeaker(sc.getSpeaker());
+            slots.save(s);
+            updated++;
+        }
+        StringBuilder note = new StringBuilder("Saved.");
+        if (moved > 0) note.append(" ").append(moved).append(" upcoming session").append(moved == 1 ? "" : "s")
+                .append(" moved to the new time.");
+        else if (updated > 0) note.append(" ").append(updated).append(" upcoming session").append(updated == 1 ? "" : "s")
+                .append(" updated.");
+        if (kept > 0) note.append(" ").append(kept).append(" already booked, left as ")
+                .append(kept == 1 ? "it was" : "they were").append(".");
+        return note.toString();
     }
 
     /** Writes only the keys present in the patch; everything else stays as stored. */
@@ -994,6 +1048,22 @@ public class ScheduleService {
      * a second attendance row or a second log line.
      */
     public Slot markHeld(String slotId, String actorId, String actorEmail, List<String> absentLearnerIds) {
+        return markHeld(slotId, actorId, actorEmail, absentLearnerIds, List.of(), null);
+    }
+
+    /**
+     * The same confirmation, with the learners who came without booking.
+     *
+     * A one to one call often ran for a learner who never booked the slot: the session
+     * was a draft they could not see, or they were simply told the link. Marking it held
+     * then marked nobody, and the learner's onboarding stayed open although the call had
+     * happened. The host can now name who attended. Each one gets the booking they would
+     * have made, marked attended, and the same attendance row as a booked learner, so
+     * the gate clears through the one path that clears it. Only learners the host can
+     * see (their own, or those they are covering) are accepted; an admin may name any.
+     */
+    public Slot markHeld(String slotId, String actorId, String actorEmail, List<String> absentLearnerIds,
+                         List<String> attendedLearnerIds, String role) {
         Slot s = slots.findById(slotId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such session."));
         if (s.isHeld()) return s;
@@ -1007,8 +1077,10 @@ public class ScheduleService {
         }
         Set<String> absent = absentLearnerIds == null ? Set.of() : new HashSet<>(absentLearnerIds);
         int present = 0;
+        Set<String> seen = new HashSet<>();
         for (Booking b : bookings.findBySlotId(slotId)) {
             if (b.getLearnerId() == null || "CANCELLED".equals(b.getStatus())) continue;
+            seen.add(b.getLearnerId());
             boolean came = !absent.contains(b.getLearnerId());
             mark(slotId, b.getLearnerId(), came ? "PRESENT" : "ABSENT");
             /* the booking's own status was declared and never written; it is the record
@@ -1017,6 +1089,28 @@ public class ScheduleService {
             bookings.save(b);
             if (came) present++;
         }
+        if (attendedLearnerIds != null && !attendedLearnerIds.isEmpty()) {
+            boolean admin = "ADMIN".equals(role) || "SUPER_ADMIN".equals(role);
+            Set<String> allowed = admin ? null
+                    : cover.learnersVisibleTo(actorId).stream().map(Learner::getId).collect(Collectors.toSet());
+            for (String learnerId : attendedLearnerIds) {
+                if (learnerId == null || seen.contains(learnerId)) continue;
+                Learner l = learners.findById(learnerId).orElse(null);
+                if (l == null) continue;
+                if (allowed != null && !allowed.contains(learnerId)) {
+                    throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                            "That learner is not one of yours, so you cannot record them here.");
+                }
+                Booking b = new Booking();
+                b.setSlotId(slotId);
+                b.setLearnerId(learnerId);
+                b.setStatus("ATTENDED");
+                bookings.save(b);
+                mark(slotId, learnerId, "PRESENT");
+                seen.add(learnerId);
+                present++;
+            }
+        }
         s.setHeldAt(Instant.now());
         s.setHeldBy(actorId);
         s.setOpen(false);
@@ -1024,6 +1118,58 @@ public class ScheduleService {
         activity.log(actorId, actorEmail, "SESSION_HELD", "slot",
                 slotId + " (" + s.getKind() + "): " + present + " attended, " + absent.size() + " absent");
         return saved;
+    }
+
+    /**
+     * What the mark-held dialog needs: who booked, by name, and who else the host may
+     * record as having come. The candidates are the premium learners the host can see
+     * (batch learners never book a one to one), with the ones still waiting for their
+     * onboarding call first when the session is an onboarding call.
+     */
+    public Map<String, Object> heldOptions(String slotId, String actorId, String role) {
+        Slot s = slots.findById(slotId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No such session."));
+        boolean admin = "ADMIN".equals(role) || "SUPER_ADMIN".equals(role);
+        List<Map<String, Object>> booked = new ArrayList<>();
+        Set<String> bookedIds = new HashSet<>();
+        for (Booking b : bookings.findBySlotId(slotId)) {
+            if (b.getLearnerId() == null || "CANCELLED".equals(b.getStatus())) continue;
+            bookedIds.add(b.getLearnerId());
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("learnerId", b.getLearnerId());
+            m.put("name", learnerName(b.getLearnerId()));
+            booked.add(m);
+        }
+        boolean onboarding = "ONBOARDING".equals(s.getKind());
+        List<Learner> pool = admin
+                ? (s.getMentorId() == null ? List.of() : cover.learnersVisibleTo(s.getMentorId()))
+                : cover.learnersVisibleTo(actorId);
+        List<Map<String, Object>> candidates = pool.stream()
+                .filter(l -> l.getTrackType() == Learner.TrackType.PREMIUM && !l.isOnHold())
+                .filter(l -> !bookedIds.contains(l.getId()))
+                .map(l -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("learnerId", l.getId());
+                    m.put("name", learnerName(l.getId()));
+                    m.put("awaitingCall", onboarding && !l.isGateCallDone());
+                    return m;
+                })
+                .sorted(Comparator.comparing((Map<String, Object> m) -> !(Boolean) m.get("awaitingCall"))
+                        .thenComparing(m -> String.valueOf(m.get("name"))))
+                .collect(Collectors.toList());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("id", s.getId());
+        out.put("kind", s.getKind());
+        out.put("held", s.isHeld());
+        out.put("booked", booked);
+        out.put("candidates", candidates);
+        return out;
+    }
+
+    private String learnerName(String learnerId) {
+        return learners.findById(learnerId == null ? "-" : learnerId)
+                .flatMap(l -> users.findById(l.getUserId()))
+                .map(User::getFullName).orElse("Learner");
     }
 
     /** The onboarding and induction kinds are the only two that gate anything. */

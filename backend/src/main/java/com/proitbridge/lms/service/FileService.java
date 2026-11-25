@@ -57,6 +57,34 @@ public class FileService {
             "zip", "tar", "gz", "tgz", "7z", "rar");
 
     /*
+     * Which files each file kind takes. A notebook filed under Notes opened in the
+     * reader as a wall of JSON and was never seen by the code runner, because the kind
+     * was whatever button was pressed, not what the file was. Same table as the client, kept beside the whitelist above so the two cannot drift.
+     */
+    public static final Map<String, Set<String>> FILE_KINDS = Map.of(
+            "NOTES", Set.of("pdf", "doc", "docx", "odt", "rtf", "txt", "md", "html",
+                    "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tif", "tiff"),
+            "CODE", Set.of("ipynb", "py", "r", "rmd", "sql", "js", "ts", "java", "c", "cpp", "cs",
+                    "go", "rb", "php", "sh", "css", "scala", "m", "jl",
+                    "zip", "tar", "gz", "tgz", "7z", "rar"),
+            "DATASET", Set.of("csv", "tsv", "xls", "xlsx", "ods", "json", "xml", "yaml", "yml",
+                    "parquet", "pbix", "pbit", "twb", "twbx", "qvf"),
+            "SLIDES", Set.of("ppt", "pptx", "odp"));
+    public static final Map<String, String> KIND_LABEL = Map.of(
+            "NOTES", "Notes", "CODE", "Code", "DATASET", "Dataset", "SLIDES", "Slides");
+
+    /** The kind a filename belongs under, or null when it is none of the four. */
+    public static String kindForFile(String filename) {
+        if (filename == null) return null;
+        int dot = filename.lastIndexOf('.');
+        String ext = dot < 0 ? "" : filename.substring(dot + 1).toLowerCase();
+        for (Map.Entry<String, Set<String>> e : FILE_KINDS.entrySet()) {
+            if (e.getValue().contains(ext)) return e.getKey();
+        }
+        return null;
+    }
+
+    /*
      * Refused whatever the extension says, because these are the ones that do damage
      * if a person downloads and opens them without thinking. A learner has no reason
      * to hand one in, so there is nothing lost by the rule being blunt.

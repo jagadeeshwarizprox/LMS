@@ -133,8 +133,12 @@ public class RecordingService {
         Criteria c = mentorId == null ? Criteria.where("startsAt").gt(from).lt(now)
                 : Criteria.where("mentorId").is(mentorId).and("startsAt").gt(from).lt(now);
         c = c.and("kind").in(KIND_FROM_SLOT.keySet()).and("cancelled").ne(true);
+        /* a slot with no start, or no kind, is not a held session whatever else it carries;
+           older rows can lack either, and one of them in a long window took the whole
+           coverage page down with a null */
         return mongo.find(Query.query(c).with(Sort.by(Sort.Direction.ASC, "startsAt")), Slot.class).stream()
-                .filter(s -> s.getStartsAt().plus(s.getDurationMin(), ChronoUnit.MINUTES).isBefore(now))
+                .filter(s -> s.getId() != null && s.getStartsAt() != null && s.getKind() != null)
+                .filter(s -> s.getStartsAt().plus(Math.max(0, s.getDurationMin()), ChronoUnit.MINUTES).isBefore(now))
                 .collect(Collectors.toList());
     }
 
@@ -161,7 +165,7 @@ public class RecordingService {
 
     /** "Monday doubt clearing, 18 Aug" writes itself from what the slot already knows. */
     private String suggestTitle(Slot s) {
-        String kind = switch (s.getKind()) {
+        String kind = switch (s.getKind() == null ? "" : s.getKind()) {
             case "GROUP_DOUBT", "DOUBT" -> "Doubt clearing";
             case "PROJECT" -> "Project session";
             case "LIVE" -> "Live session";
@@ -171,6 +175,7 @@ public class RecordingService {
             case "MOCK" -> "Mock debrief";
             default -> "Session";
         };
+        if (s.getStartsAt() == null) return kind;
         var z = s.getStartsAt().atZone(java.time.ZoneId.of("Asia/Kolkata"));
         return kind + ", " + z.format(java.time.format.DateTimeFormatter.ofPattern("d MMM"));
     }
@@ -398,8 +403,12 @@ public class RecordingService {
         List<Slot> held = heldBetween(null, from, now);
         Set<String> recorded = recordedSlotIds(held);
         Map<String, String> mentorNames = new HashMap<>();
-        users.findAllById(held.stream().map(Slot::getMentorId).filter(Objects::nonNull)
-                .collect(Collectors.toSet())).forEach(u -> mentorNames.put(u.getId(), u.getFullName()));
+        Set<String> mentorIds = held.stream().map(Slot::getMentorId).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (!mentorIds.isEmpty()) {
+            users.findAllById(mentorIds).forEach(u -> mentorNames.put(u.getId(),
+                    u.getFullName() == null || u.getFullName().isBlank() ? "Unknown" : u.getFullName()));
+        }
 
         Map<String, List<Slot>> byMentor = held.stream().collect(Collectors.groupingBy(
                 s -> s.getMentorId() == null ? "" : s.getMentorId(), LinkedHashMap::new, Collectors.toList()));
@@ -426,11 +435,12 @@ public class RecordingService {
         }
         rows.sort((a, b) -> Integer.compare((int) b.get("missing"), (int) a.get("missing")));
 
+        Map<String, String> mentorOfSlot = new HashMap<>();
+        for (Slot s : held) if (s.getMentorId() != null) mentorOfSlot.put(s.getId(), s.getMentorId());
         List<Map<String, Object>> missing = pending(null).stream()
-                .filter(m -> ((Instant) m.get("heldOn")).isAfter(from))
+                .filter(m -> m.get("heldOn") instanceof Instant at && at.isAfter(from))
                 .peek(m -> {
-                    String mentorId = held.stream().filter(s -> s.getId().equals(m.get("slotId")))
-                            .map(Slot::getMentorId).findFirst().orElse(null);
+                    String mentorId = mentorOfSlot.get(String.valueOf(m.get("slotId")));
                     m.put("mentor", mentorId == null ? null : mentorNames.get(mentorId));
                 })
                 .collect(Collectors.toList());

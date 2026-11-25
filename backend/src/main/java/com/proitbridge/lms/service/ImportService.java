@@ -44,8 +44,15 @@ public class ImportService {
     private static final List<String> PREMIUM_HINTS = List.of("premium", "personalis", "personaliz");
     private static final List<String> BATCH_HINTS = List.of("group", "batch");
 
+    /**
+     * The counts, the outcome per row, and the rows as the sheet had them. The screen
+     * used to show four numbers and, after the import, an email per row: the person
+     * looking at a preview could not see who was about to be created, on which track,
+     * in which batch, which is the whole point of previewing.
+     */
     public record ImportSummary(int created, int upgraded, int existing, int skipped,
-                                List<ProvisioningService.Outcome> rows, List<String> sheets) {}
+                                List<ProvisioningService.Outcome> rows, List<String> sheets,
+                                List<Map<String, Object>> learners) {}
 
     public ImportSummary importWorkbook(MultipartFile file, boolean dispatchMail, String actorEmail)
             throws Exception {
@@ -88,6 +95,7 @@ public class ImportService {
                                boolean dryRun) throws Exception {
         try (Workbook wb = WorkbookFactory.create(in)) {
             List<ProvisioningService.Outcome> outcomes = new ArrayList<>();
+            List<Map<String, Object>> learners = new ArrayList<>();
             List<String> notes = new ArrayList<>();
             for (int s = 0; s < wb.getNumberOfSheets(); s++) {
                 Sheet sheet = wb.getSheetAt(s);
@@ -100,7 +108,7 @@ public class ImportService {
 
                 Learner.TrackType named = trackFor(name);
                 List<ProvisioningService.Outcome> got =
-                        readSheet(sheet, named, dispatchMail, actorEmail, dryRun);
+                        readSheet(sheet, named, dispatchMail, actorEmail, dryRun, learners);
                 outcomes.addAll(got);
 
                 notes.add(name + ": " + got.size() + " row" + (got.size() == 1 ? "" : "s")
@@ -109,7 +117,7 @@ public class ImportService {
                             : named.name().toLowerCase()) + ".");
             }
             if (notes.isEmpty()) notes.add("This workbook has no sheets in it.");
-            return summarise(outcomes, notes);
+            return summarise(outcomes, notes, learners);
         }
     }
 
@@ -200,7 +208,7 @@ public class ImportService {
 
     private List<ProvisioningService.Outcome> readSheet(Sheet sheet, Learner.TrackType track,
                                                         boolean dispatchMail, String actorEmail,
-                                                        boolean dryRun) {
+                                                        boolean dryRun, List<Map<String, Object>> learners) {
         List<ProvisioningService.Outcome> out = new ArrayList<>();
         Row header = findHeader(sheet);
         if (header == null) return out;
@@ -224,9 +232,22 @@ public class ImportService {
                     pick(row, cols, "batch", "batch no", "batch number", "batch code"),
                     date(row, cols, "date of joining", "joining date", "doj", "enrolled on"),
                     sheet.getSheetName() + "!" + (r + 1), null);
-            out.add(dryRun
+            ProvisioningService.Outcome o = dryRun
                     ? provisioning.wouldProvision(record)
-                    : provisioning.provision(record, dispatchMail, actorEmail));
+                    : provisioning.provision(record, dispatchMail, actorEmail);
+            out.add(o);
+            /* the row as the sheet had it, beside what was (or would be) done with it */
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("row", record.sourceRow());
+            m.put("name", record.fullName() == null ? "" : record.fullName());
+            m.put("email", email);
+            m.put("course", record.bundleName() == null ? "" : record.bundleName());
+            m.put("track", record.trackType() == null ? "" : record.trackType().name());
+            m.put("batch", record.batchCode() == null ? "" : record.batchCode());
+            m.put("status", o.status());
+            m.put("detail", o.detail());
+            m.put("learnerId", o.learnerId());
+            learners.add(m);
         }
         return out;
     }
@@ -284,7 +305,8 @@ public class ImportService {
         };
     }
 
-    private ImportSummary summarise(List<ProvisioningService.Outcome> rows, List<String> sheets) {
+    private ImportSummary summarise(List<ProvisioningService.Outcome> rows, List<String> sheets,
+                                    List<Map<String, Object>> learners) {
         int created = 0, upgraded = 0, existing = 0, skipped = 0;
         for (var o : rows) {
             switch (o.status()) {
@@ -294,6 +316,6 @@ public class ImportService {
                 default -> skipped++;
             }
         }
-        return new ImportSummary(created, upgraded, existing, skipped, rows, sheets);
+        return new ImportSummary(created, upgraded, existing, skipped, rows, sheets, learners);
     }
 }

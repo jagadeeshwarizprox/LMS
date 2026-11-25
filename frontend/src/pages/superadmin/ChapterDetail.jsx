@@ -99,6 +99,41 @@ export default function ChapterDetail() {
     catch (e) { toast.push(e.message, 'bad') }
   }
 
+  /* the chapter's own title and one-line; nothing else on this page was editable
+     once a chapter had been named */
+  const editChapter = async () => {
+    const r = await ask({
+      title: `Edit ${c.title}`,
+      fields: [
+        { name: 'title', label: 'Title', required: true, value: c.title },
+        { name: 'summary', label: 'One line', value: c.summary || '' }
+      ],
+      confirmLabel: 'Save'
+    })
+    if (!r) return
+    run(() => api.post('/super/catalogue/chapters', { ...r, id: c.id, moduleId: m.id }), 'Chapter saved.')
+  }
+
+  /* the next chapter of the same module, from here, so building a module does not
+     mean going back to the list and finding it again each time */
+  const addChapter = async () => {
+    const r = await ask({
+      title: `New chapter in ${m.name}`,
+      body: 'One sitting. Its topics are the videos; the test, assignment and teach back cover them together.',
+      fields: [
+        { name: 'title', label: 'Title', required: true },
+        { name: 'summary', label: 'One line', placeholder: 'What this chapter covers' }
+      ],
+      confirmLabel: 'Create chapter'
+    })
+    if (!r) return
+    try {
+      const saved = await api.post('/super/catalogue/chapters', { ...r, moduleId: m.id })
+      toast.push('Chapter created.')
+      nav(`/super/chapters/${saved.id}`)
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
+
   /* ------------------------------------------------------------------ topics */
 
   const pasteTopics = async () => {
@@ -272,7 +307,9 @@ export default function ChapterDetail() {
         <>
           {!authoring && <button className="btn" onClick={() => nav(-1)}>Back</button>}
           {authoring && <>
-          <button className="btn" onClick={() => nav('/super/modules')}>Back to modules</button>
+          <button className="btn" onClick={() => nav(`/super/modules/${m.id}`)}>Back to module</button>
+          <button className="btn" onClick={editChapter}>Edit</button>
+          <button className="btn" onClick={addChapter}>Add a chapter</button>
           <button className="btn" onClick={pasteTopics}>Paste an outline</button>
           {c.published
             ? <Tag kind="ok">Live for learners</Tag>
@@ -681,7 +718,12 @@ export default function ChapterDetail() {
         {editing && (
           <TopicForm
             topic={editing}
-            onSaved={async () => { setEditing(null); await load() }}
+            modules={tree.modules}
+            onSaved={async (movedTo) => {
+              setEditing(null)
+              if (movedTo && movedTo !== id) nav(`/super/chapters/${movedTo}`)
+              else await load()
+            }}
           />
         )}
       </Drawer>
@@ -697,7 +739,7 @@ export default function ChapterDetail() {
  * a new id into a topic that already has one is a rotation, which is the same operation
  * as fixing a leak.
  */
-function TopicForm({ topic, onSaved }) {
+function TopicForm({ topic, modules, onSaved }) {
   const toast = useToast()
   const [form, setForm] = useState({
     title: topic.title || '',
@@ -706,23 +748,27 @@ function TopicForm({ topic, onSaved }) {
     videoExternalId: '',
     videoProvider: topic.videoProvider || 'YOUTUBE'
   })
+  /* where the topic lives; changing it is a move, and the server appends it to the
+     end of the chapter chosen */
+  const [chapterId, setChapterId] = useState(topic.chapterId)
   const [busy, setBusy] = useState(false)
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
   const parsed = parseVideo(form.videoExternalId, form.videoProvider)
+  const moving = !!topic.id && chapterId !== topic.chapterId
 
   const save = async () => {
     setBusy(true)
     try {
       await api.post('/super/catalogue/topics', {
         id: topic.id || null,
-        chapterId: topic.chapterId,
+        chapterId,
         ...form,
         /* no minutes field on the form, so whatever is stored is sent back rather than a
            zero that wiped a duration set by a pasted outline */
         durationMin: topic.durationMin ?? 0
       })
-      toast.push('Topic saved.')
-      onSaved()
+      toast.push(moving ? 'Topic moved.' : 'Topic saved.')
+      onSaved(moving ? chapterId : null)
     } catch (e) { toast.push(e.message, 'bad') } finally { setBusy(false) }
   }
 
@@ -736,6 +782,25 @@ function TopicForm({ topic, onSaved }) {
         <span className="form-label">One line</span>
         <input className="form-control" value={form.summary} onChange={set('summary')} />
       </label>
+      {topic.id && modules && (
+        <label className="mb-3">
+          <span className="form-label">Chapter</span>
+          <select className="form-control" value={chapterId} onChange={(e) => setChapterId(e.target.value)}>
+            {modules.map((mod) => (
+              <optgroup key={mod.id} label={mod.name}>
+                {mod.chapters.map((ch) => (
+                  <option key={ch.id} value={ch.id}>{ch.title}</option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+          {moving && (
+            <span className="tiny muted">
+              Moves this topic, its video, files and watch history to the end of that chapter.
+            </span>
+          )}
+        </label>
+      )}
       {/*
         * No minutes field.
         *

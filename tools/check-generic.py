@@ -23,6 +23,9 @@ EXEMPT = {
     # an upload whitelist is a list of file extensions, so it necessarily names
     # formats and languages. None of it is copy: nothing here reaches a screen.
     'FileService.java',
+    # the same list, per kind, on the client: which file types each Notes / Code /
+    # Dataset / Slides button accepts. Extensions, not copy.
+    'ResourceList.jsx',
 }
 
 

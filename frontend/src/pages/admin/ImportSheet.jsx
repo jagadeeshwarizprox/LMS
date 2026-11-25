@@ -116,6 +116,7 @@ export default function ImportSheet() {
               </div>
             </div>
             <SheetNotes sheets={preview.sheets} />
+            <LearnerRows rows={preview.learners || preview.rows} preview />
             {preview.created === 0 && preview.upgraded === 0 ? (
               <div className="locked-note">
                 Nothing in this file is new. Importing it would change nothing.
@@ -155,27 +156,49 @@ export default function ImportSheet() {
           </Card>
 
           <Card title="Row by row">
-            <div className="table-responsive" style={{ maxHeight: 420 }}>
-              <table className="table table-pib mb-0">
-                <thead><tr><th>Email</th><th>Result</th><th>Detail</th></tr></thead>
-                <tbody>
-                  {summary.rows.map((r, i) => (
-                    <tr key={i}>
-                      <td className="mono">{r.email}</td>
-                      <td>
-                        <Tag kind={r.status === 'CREATED' ? 'ok' : r.status === 'UPGRADED' ? 'batch' : r.status === 'EXISTS' ? 'wait' : 'stop'}>
-                          {r.status}
-                        </Tag>
-                      </td>
-                      <td>{r.detail}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <LearnerRows rows={summary.learners || summary.rows} />
           </Card>
         </>
       )}
     </Page>
+  )
+}
+
+/**
+ * The rows as the sheet had them, with what was (or would be) done to each.
+ *
+ * Shown in the preview as well as after the import: the person about to press Import
+ * wants to see the names, tracks and batches that are about to become accounts, not
+ * four numbers.
+ */
+function LearnerRows({ rows, preview }) {
+  if (!rows || rows.length === 0) {
+    return <p className="small muted mb-2">No learner rows were read from this file.</p>
+  }
+  const tone = (st) => (st === 'CREATED' ? 'ok' : st === 'UPGRADED' ? 'batch' : st === 'EXISTS' ? 'wait' : 'stop')
+  const word = (st) => preview
+    ? ({ CREATED: 'Will be created', UPGRADED: 'Will move to premium', EXISTS: 'Already here' }[st] || st)
+    : ({ CREATED: 'Created', UPGRADED: 'Upgraded', EXISTS: 'Already here' }[st] || st)
+  return (
+    <div className="table-responsive mb-3" style={{ maxHeight: 420 }}>
+      <table className="table table-pib mb-0">
+        <thead>
+          <tr><th>Name</th><th>Email</th><th>Track</th><th>Batch</th><th>Course</th><th>Result</th><th>Detail</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i}>
+              <td className="fw-semibold">{r.name || <span className="muted">no name</span>}</td>
+              <td className="mono">{r.email}</td>
+              <td>{r.track ? <Tag kind={r.track === 'PREMIUM' ? 'ok' : 'batch'}>{r.track}</Tag> : ''}</td>
+              <td className="mono">{r.batch || ''}</td>
+              <td>{r.course || ''}</td>
+              <td><Tag kind={tone(r.status)}>{word(r.status)}</Tag></td>
+              <td className="small">{r.detail}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }

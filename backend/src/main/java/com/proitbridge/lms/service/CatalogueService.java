@@ -422,8 +422,14 @@ public class CatalogueService {
         t.setDurationMin(in.durationMin() == null ? 0 : in.durationMin());
         t.setCodeRunner(in.codeRunner() == null || in.codeRunner().isBlank()
                 ? "NONE" : in.codeRunner());
-        if (isNew) {
+        /* a moved topic joins the end of its new chapter, so it cannot share a position
+           with a topic already there */
+        if (isNew || moved) {
             t.setPosition(topics.findByChapterIdOrderByPositionAsc(parent.getId()).size() + 1);
+        }
+        /* the video document carries the module too; a move across modules takes it along */
+        if (moved && t.getVideoRef() != null && !Objects.equals(fromModule, parent.getModuleId())) {
+            videos.findById(t.getVideoRef()).ifPresent(v -> { v.setModuleId(parent.getModuleId()); videos.save(v); });
         }
 
         if (in.videoExternalId() != null && !in.videoExternalId().isBlank()) {

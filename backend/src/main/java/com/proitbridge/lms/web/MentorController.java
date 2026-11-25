@@ -169,10 +169,25 @@ public class MentorController {
                          @RequestBody(required = false) Map<String, Object> body) {
         AuthUser me = current.get();
         schedule.assertMayRunSlot(me.id(), me.role(), id);
-        List<String> absent = new ArrayList<>();
-        Object raw = body == null ? null : body.get("absentLearnerIds");
-        if (raw instanceof List<?> l) for (Object o : l) if (o != null) absent.add(String.valueOf(o));
-        return schedule.markHeld(id, me.id(), me.email(), absent);
+        List<String> absent = ids(body, "absentLearnerIds");
+        /* learners who came without booking: named by the host, recorded as if booked */
+        List<String> attended = ids(body, "attendedLearnerIds");
+        return schedule.markHeld(id, me.id(), me.email(), absent, attended, me.role());
+    }
+
+    /** Who booked, by name, and who else the host may record as having come. */
+    @GetMapping("/slots/{id}/held-options")
+    public Map<String, Object> heldOptions(@PathVariable String id) {
+        AuthUser me = current.get();
+        schedule.assertMayRunSlot(me.id(), me.role(), id);
+        return schedule.heldOptions(id, me.id(), me.role());
+    }
+
+    private static List<String> ids(Map<String, Object> body, String key) {
+        List<String> out = new ArrayList<>();
+        Object raw = body == null ? null : body.get(key);
+        if (raw instanceof List<?> l) for (Object o : l) if (o != null) out.add(String.valueOf(o));
+        return out;
     }
 
     @PostMapping("/slots/{id}/notes")

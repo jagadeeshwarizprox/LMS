@@ -6,6 +6,7 @@ import { useDialog } from '../../components/Dialog'
 import Avatar from '../../components/Avatar'
 import { RoadmapSkeleton } from '../../components/Skeletons'
 import Icon from '../../components/Icon'
+import HeldDialog from '../../components/HeldDialog'
 import { Bars, Trend } from '../../components/Charts'
 import { Card, Empty, Page, Stat, Tag, fmtDate, fmtDateTime } from '../../components/Ui'
 
@@ -85,22 +86,10 @@ export default function MentorHome() {
     } catch (e) { toast.push(e.message, 'bad') }
   }
 
-  /* confirming the call happened is a separate act from joining it: this is the one
-     that records attendance and clears the onboarding gate */
-  const markHeld = async (s) => {
-    const ok = await ask({
-      title: 'Mark this session as held?',
-      body: `Everyone booked (${s.booked}) is marked present and, for an onboarding call, `
-        + 'their onboarding gate clears. To mark somebody absent instead, use Attendance.',
-      confirmLabel: 'Mark as held'
-    })
-    if (!ok) return
-    try {
-      await api.post(`/mentor/slots/${s.id}/held`, {})
-      toast.push('Marked as held.')
-      setDay(await api.get('/mentor/day').catch(() => day))
-    } catch (e) { toast.push(e.message, 'bad') }
-  }
+  /* confirming the call happened is a separate act from joining it: the dialog says who
+     was there, and that is what records attendance and clears the onboarding gate */
+  const [holding, setHolding] = useState(null)
+  const afterHeld = async () => setDay(await api.get('/mentor/day').catch(() => day))
 
   const review = async (kind, id) => {
     if (sending) return
@@ -230,7 +219,10 @@ export default function MentorHome() {
                         {new Date(s.startsAt).toLocaleTimeString('en-IN',
                           { hour: '2-digit', minute: '2-digit' })}
                       </span>
-                      <span className="desk-detail">{s.booked} of {s.capacity} booked</span>
+                      <span className="desk-detail">
+                        {s.booked} of {s.capacity} booked
+                        {s.bookedNames?.length > 0 && `: ${s.bookedNames.join(', ')}`}
+                      </span>
                       {s.cancelled ? <span className="desk-late">cancelled</span>
                         : s.held ? <span className="desk-now">held</span>
                         : !s.hasRoom ? <span className="desk-late">no link</span>
@@ -238,7 +230,7 @@ export default function MentorHome() {
                         : <span className="desk-detail">join</span>}
                       {joinable && started && (
                         <button className="btn btn-quiet btn-sm ms-2"
-                          onClick={(e) => { e.stopPropagation(); markHeld(s) }}>
+                          onClick={(e) => { e.stopPropagation(); setHolding(s) }}>
                           Mark as held
                         </button>
                       )}
@@ -443,6 +435,15 @@ export default function MentorHome() {
           </table>
         )}
       </Card>
+
+      {holding && (
+        <HeldDialog
+          slotId={holding.id}
+          kindLabel={KIND[holding.kind] || holding.kind}
+          onClose={() => setHolding(null)}
+          onHeld={afterHeld}
+        />
+      )}
     </Page>
   )
 }

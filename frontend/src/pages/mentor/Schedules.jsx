@@ -57,33 +57,57 @@ export default function Schedules() {
   }
   if (!rows) return <TableSkeleton />
 
+  /* the same form for a new schedule and an existing one; an id makes it an edit */
+  const fields = (s = {}) => [
+    { name: 'label', label: 'Name', required: true, placeholder: 'Monday doubt clearing', value: s.label || '' },
+    { name: 'kind', label: 'Kind', required: true, value: s.kind || 'GROUP_DOUBT',
+      options: KINDS.map(([v, l]) => ({ value: v, label: l })) },
+    { name: 'weekday', label: 'Day', required: true, value: s.weekday ? String(s.weekday) : '1',
+      options: DAYS.map((d, i) => ({ value: String(i + 1), label: d })) },
+    { name: 'startTime', label: 'Start time', type: 'time', required: true, value: s.startTime || '19:00' },
+    { name: 'durationMin', label: 'Minutes', type: 'number', value: String(s.durationMin ?? 60) },
+    { name: 'capacity', label: 'Seats', type: 'number', value: String(s.capacity ?? 80) },
+    { name: 'trackScope', label: 'For', required: true, value: s.trackScope || 'BATCH',
+      options: [{ value: 'BATCH', label: 'Batch' }, { value: 'PREMIUM', label: 'Premium' },
+                { value: 'BOTH', label: 'Both' }] }
+  ]
+  const body = (r) => ({
+    label: r.label, kind: r.kind, weekday: Number(r.weekday), startTime: r.startTime,
+    durationMin: Number(r.durationMin || 60), capacity: Number(r.capacity || 80),
+    trackScope: r.trackScope
+  })
+
   const add = async () => {
     const r = await ask({
       title: 'Add a repeating session',
       body: 'Slots are generated two weeks ahead and refreshed nightly.',
-      fields: [
-        { name: 'label', label: 'Name', required: true, placeholder: 'Monday doubt clearing' },
-        { name: 'kind', label: 'Kind', required: true,
-          options: KINDS.map(([v, l]) => ({ value: v, label: l })) },
-        { name: 'weekday', label: 'Day', required: true,
-          options: DAYS.map((d, i) => ({ value: String(i + 1), label: d })) },
-        { name: 'startTime', label: 'Start time', type: 'time', required: true, value: '19:00' },
-        { name: 'durationMin', label: 'Minutes', type: 'number', value: '60' },
-        { name: 'capacity', label: 'Seats', type: 'number', value: '80' },
-        { name: 'trackScope', label: 'For', required: true,
-          options: [{ value: 'BATCH', label: 'Batch' }, { value: 'PREMIUM', label: 'Premium' },
-                    { value: 'BOTH', label: 'Both' }] }
-      ],
+      fields: fields(),
       confirmLabel: 'Add'
     })
     if (!r) return
     try {
-      await api.post('/week/schedules', {
-        label: r.label, kind: r.kind, weekday: Number(r.weekday), startTime: r.startTime,
-        durationMin: Number(r.durationMin || 60), capacity: Number(r.capacity || 80),
-        trackScope: r.trackScope
-      })
-      toast.push('Added. The next two weeks of slots are live.')
+      const out = await api.post('/week/schedules', body(r))
+      toast.push(out?.note || 'Added. The next two weeks of slots are live.')
+      await load()
+    } catch (e) { toast.push(e.message, 'bad') }
+  }
+
+  /*
+   * Editing one. The server brings the already generated, unbooked slots in line (a
+   * new time moves them; other changes rewrite them in place) and says in its note
+   * how many booked ones it left where they were.
+   */
+  const edit = async (s) => {
+    const r = await ask({
+      title: `Edit ${s.label || s.kind}`,
+      body: 'Upcoming sessions nobody has booked follow the change. Booked ones stay as they are.',
+      fields: fields(s),
+      confirmLabel: 'Save'
+    })
+    if (!r) return
+    try {
+      const out = await api.post('/week/schedules', { id: s.id, ...body(r) })
+      toast.push(out?.note || 'Saved.')
       await load()
     } catch (e) { toast.push(e.message, 'bad') }
   }
@@ -132,10 +156,16 @@ export default function Schedules() {
                     <Tag kind={s.active ? 'ok' : 'batch'}>{s.active ? 'Running' : 'Paused'}</Tag>
                     {/* canEdit is the same owner rule the server applies to pausing */}
                     {s.canEdit && (
-                      <button className="btn btn-quiet ms-2" onClick={() => toggle(s)}
-                        disabled={busy === s.id}>
-                        {s.active ? 'Pause' : 'Resume'}
-                      </button>
+                      <>
+                        <button className="btn btn-quiet ms-2" onClick={() => edit(s)}
+                          disabled={busy === s.id}>
+                          Edit
+                        </button>
+                        <button className="btn btn-quiet ms-1" onClick={() => toggle(s)}
+                          disabled={busy === s.id}>
+                          {s.active ? 'Pause' : 'Resume'}
+                        </button>
+                      </>
                     )}
                   </td>
                 </tr>

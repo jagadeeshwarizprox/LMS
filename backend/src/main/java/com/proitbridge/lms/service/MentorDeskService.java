@@ -318,7 +318,13 @@ public class MentorDeskService {
                     m.put("id", s.getId());
                     m.put("kind", s.getKind());
                     m.put("startsAt", s.getStartsAt());
-                    m.put("booked", bookings.findBySlotId(s.getId()).size());
+                    List<Booking> bk = bookings.findBySlotId(s.getId()).stream()
+                            .filter(b -> !"CANCELLED".equals(b.getStatus())).toList();
+                    m.put("booked", bk.size());
+                    /* who, by name, for the small sessions: a one to one that says
+                       "0 of 1 booked" tells the mentor nothing about who to expect */
+                    m.put("bookedNames", bk.size() > 8 ? List.of()
+                            : bk.stream().map(b -> nameOfLearner(b.getLearnerId())).toList());
                     m.put("capacity", s.getCapacity());
                     m.putAll(meetings.windowFor(s));
                     /* the row is a button now, so it has to say what pressing it will do:

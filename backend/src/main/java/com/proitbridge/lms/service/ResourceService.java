@@ -186,6 +186,22 @@ public class ResourceService {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                             "Attach the file first.");
                 }
+                /* the file decides the kind, not the button: a .ipynb is Code whichever
+                   was pressed, and a kind that takes no such file is refused by name */
+                String filename = files.findById(r.getFileId()).map(StoredFile::getFilename).orElse(null);
+                String should = FileService.kindForFile(filename);
+                if (filename != null && should != null && !should.equals(kind)) {
+                    if (isNew) {
+                        throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                                filename + " is a " + FileService.KIND_LABEL.get(should).toLowerCase()
+                                + " file; add it under " + FileService.KIND_LABEL.get(should) + ", not "
+                                + FileService.KIND_LABEL.get(kind) + ".");
+                    }
+                    /* a row filed under the wrong kind before this check existed is
+                       corrected the next time it is saved, rather than refused */
+                    kind = should;
+                    r.setKind(kind);
+                }
                 r.setVideoRef(null); r.setUrl(null); r.setBody(null);
             }
             case "url" -> {

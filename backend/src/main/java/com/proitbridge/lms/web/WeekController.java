@@ -1,6 +1,5 @@
 package com.proitbridge.lms.web;
 
-import com.proitbridge.lms.domain.SessionSchedule;
 import com.proitbridge.lms.domain.Slot;
 import com.proitbridge.lms.security.AuthUser;
 import com.proitbridge.lms.security.CurrentUser;
@@ -8,6 +7,7 @@ import com.proitbridge.lms.service.ScheduleService;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -54,12 +54,18 @@ public class WeekController {
      * host rotation, which is what makes one weekly slot cycle across the roster.
      */
     @PostMapping("/schedules")
-    public SessionSchedule saveSchedule(@RequestBody Map<String, Object> body) {
+    public Map<String, Object> saveSchedule(@RequestBody Map<String, Object> body) {
         AuthUser me = current.get();
         /* taken as a map so the service can tell a field left out from one sent empty:
            an edit merges onto the stored schedule rather than replacing it, and an id
            is checked against its owner before anything is written */
-        return schedule.saveFromBoard(body, me.id(), me.role());
+        ScheduleService.ScheduleSaved r = schedule.saveFromBoard(body, me.id(), me.role());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("id", r.schedule().getId());
+        out.put("schedule", r.schedule());
+        /* what happened to the slots already on the board, for the toast */
+        out.put("note", r.note());
+        return out;
     }
 
     @PostMapping("/schedules/{id}/active")
@@ -78,6 +84,10 @@ public class WeekController {
         if (!admin) {
             schedule.assertMayEdit(me.id(), me.role(), (String) body.get("hostId"));
             body.put("hostId", me.id());
+            /* a mentor's own session goes live as it is saved, the way their repeating
+               sessions always have. Held as a draft, learners could neither see nor book
+               it, the call happened anyway, and marking it held then had nobody to mark */
+            body.put("published", true);
         }
         return schedule.createOne(body);
     }

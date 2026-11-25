@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, downloadFile } from '../../api/client'
 import { useToast } from '../../context/ToastContext'
 import { useAuth } from '../../context/AuthContext'
@@ -48,7 +48,11 @@ export default function LearnerRecord() {
   const toast = useToast()
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
-  const [tab, setTab] = useState('overview')
+  /* ?tab=move opens straight on the move panel, which is how All learners sends an
+     admin here to change a course or a track without hunting for the tab */
+  const [params] = useSearchParams()
+  const wanted = params.get('tab')
+  const [tab, setTab] = useState(TABS.some(([k]) => k === wanted) ? wanted : 'overview')
   const [study, setStudy] = useState(null)
   const [call, setCall] = useState({ notes: '', nextGoal: '' })
   /* a second press while the first was in flight logged the call twice */

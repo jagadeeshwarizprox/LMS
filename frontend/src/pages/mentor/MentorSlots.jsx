@@ -5,6 +5,7 @@ import { useAuth } from '../../context/AuthContext'
 import { TableSkeleton } from '../../components/Skeletons'
 import { useDialog } from '../../components/Dialog'
 import FileUpload from '../../components/FileUpload'
+import HeldDialog from '../../components/HeldDialog'
 import { Card, Empty, Page, Tag, fmtDateTime } from '../../components/Ui'
 
 export default function MentorSlots() {
@@ -145,39 +146,11 @@ export default function MentorSlots() {
 
   /*
    * Confirming the session ran. Nothing automatic can do this: the room is a pasted
-   * link and there is no feed back from it. The host says who was there, and that is
-   * what records attendance and, for an onboarding call, clears the gate.
+   * link and there is no feed back from it. The host says who was there, in the same
+   * dialog the desk uses, and that is what records attendance and, for an onboarding
+   * call, clears the gate.
    */
-  const markHeld = async (r) => {
-    const names = r.booked.filter(Boolean)
-    const res = await ask({
-      title: 'Mark this session as held',
-      body: names.length === 0
-        ? 'Nobody booked this session. It is recorded as held with no attendance.'
-        : `Booked: ${names.join(', ')}. Everyone is marked present unless you list them below. `
-          + 'This is what clears an onboarding gate, so only confirm once the call has run.',
-      fields: names.length === 0 ? [] : [{
-        name: 'absent', label: 'Anyone who did not turn up', required: false,
-        placeholder: 'Leave empty if everyone came, or name them exactly as above, comma separated'
-      }],
-      confirmLabel: 'Mark as held'
-    })
-    if (!res) return
-    /* names typed back are matched to the booking order the server sent */
-    const absentNames = String(res.absent || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean)
-    const absentLearnerIds = (r.bookedIds || []).filter((id, i) =>
-      absentNames.includes(String(names[i] || '').toLowerCase()))
-    if (absentNames.length > 0 && absentLearnerIds.length !== absentNames.length) {
-      toast.push('One of those names does not match a booking. Use Attendance to mark them.', 'bad')
-      return
-    }
-    try {
-      await api.post(`/mentor/slots/${r.slot.id}/held`, { absentLearnerIds })
-      toast.push(names.length === 0 ? 'Marked as held.'
-        : `Marked as held. ${names.length - absentLearnerIds.length} present.`)
-      await load()
-    } catch (e) { toast.push(e.message, 'bad') }
-  }
+  const [holding, setHolding] = useState(null)
 
   const cancel = async (r) => {
     const res = await ask({
@@ -476,7 +449,7 @@ export default function MentorSlots() {
                       <button className="btn btn-quiet" onClick={() => join(r)}>Join</button>
                     )}
                     {live && !future && (
-                      <button className="btn btn-quiet ms-2" onClick={() => markHeld(r)}>Mark as held</button>
+                      <button className="btn btn-quiet ms-2" onClick={() => setHolding(r)}>Mark as held</button>
                     )}
                     {live && future && (
                       <>
@@ -492,6 +465,15 @@ export default function MentorSlots() {
           </table>
         )}
       </Card>
+
+      {holding && (
+        <HeldDialog
+          slotId={holding.slot.id}
+          kindLabel={holding.slot.kind}
+          onClose={() => setHolding(null)}
+          onHeld={load}
+        />
+      )}
     </Page>
   )
 }

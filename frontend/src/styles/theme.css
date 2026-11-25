@@ -2336,15 +2336,23 @@ body.dark .res-kind.k-slides { background: #2E2411; color: #E5BE72; }
 }
 /* a drawer is 560px wide at any screen size, and four controls beside the title
    squeeze it into a two line wrap, so they sit under it instead */
-.drw .res-table tr { display: grid; grid-template-columns: 44px 1fr; align-items: start; }
-.drw .res-table td { border-bottom: none; }
-.drw .res-table tr { border-bottom: 1px solid var(--line-soft); }
-.drw .res-table tr:last-child { border-bottom: none; }
-.drw .res-table td:last-child {
+.drw .res-table tr,
+.ws .res-table tr { display: grid; grid-template-columns: 44px 1fr; align-items: start; }
+.drw .res-table td,
+.ws .res-table td { border-bottom: none; }
+.drw .res-table tr,
+.ws .res-table tr { border-bottom: 1px solid var(--line-soft); }
+.drw .res-table tr:last-child,
+.ws .res-table tr:last-child { border-bottom: none; }
+/* the chapter workspace's middle column is no wider than a drawer, and the same five
+   controls pushed Remove off the right edge of it, so it takes the drawer layout too */
+.drw .res-table td:last-child,
+.ws .res-table td:last-child {
   grid-column: 1 / -1;
   padding-top: 0;
   padding-bottom: 12px;
   justify-content: flex-start;
+  flex-wrap: wrap;
 }
 .res-actions .icon-btn { width: 28px; height: 28px; border: 1px solid var(--line); border-radius: var(--radius-sm); }
 

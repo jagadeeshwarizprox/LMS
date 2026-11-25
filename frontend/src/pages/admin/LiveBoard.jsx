@@ -347,7 +347,8 @@ function SessionForm({ existing, weekStart, dayIndex, mentors, batches, isAdmin,
   const [hostId, setHostId] = useState(existing?.hostId || '')
   const [topic, setTopic] = useState(existing?.topic || '')
   const [speaker, setSpeaker] = useState(existing?.speaker || '')
-  const [publish, setPublish] = useState(existing ? !!existing.published : false)
+  /* an admin chooses; a mentor's own session is live as soon as it is saved */
+  const [publish, setPublish] = useState(existing ? !!existing.published : !isAdmin)
   const [busy, setBusy] = useState(false)
 
   const date = useMemo(() => {
@@ -533,13 +534,12 @@ function SessionForm({ existing, weekStart, dayIndex, mentors, batches, isAdmin,
             <span>Release to learners now, rather than holding it in the week's draft</span>
           </label>
         )}
-        {!isAdmin && (
+        {!isAdmin && !existing && (
           <p className="muted wide">
-            This is added to the week as a draft. The office releases the week to learners.
+            Learners can see and book this session as soon as it is saved.
           </p>
         )}
       </div>
     </Drawer>
   )
 }
-

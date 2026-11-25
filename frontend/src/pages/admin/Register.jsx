@@ -562,6 +562,12 @@ export default function Register() {
                     </td>
                     <td className="text-end">
                       <div className="row-actions">
+                        {/* the course and the track are changed on the learner's own record,
+                            under Move; these open it there, since nobody found the tab */}
+                        <Link className="btn btn-s" to={`/mentor/learners/${l.learnerId}?tab=move`}>Change course</Link>
+                        <Link className="btn btn-s" to={`/mentor/learners/${l.learnerId}?tab=move`}>
+                          {l.trackType === 'PREMIUM' ? 'Move to batch' : 'Move to premium'}
+                        </Link>
                         <button className="btn btn-s" onClick={() => resend(l.learnerId)}>Resend login</button>
                         <button className="btn btn-s" onClick={() => resetPassword(l)}>Reset password</button>
                         <button className="btn btn-s" onClick={() => openDevices(l)}>Devices</button>

@@ -70,6 +70,21 @@ export default function ModuleDetail() {
     run(() => api.post('/super/catalogue/chapters', { ...r, moduleId: m.id }), 'Chapter added.')
   }
 
+  /* the title and one-line of a chapter, from the list; everything inside it is
+     edited on its own page */
+  const renameChapter = async (c) => {
+    const r = await ask({
+      title: `Edit ${c.title}`,
+      fields: [
+        { name: 'title', label: 'Title', required: true, value: c.title },
+        { name: 'summary', label: 'One line', value: c.summary || '' }
+      ],
+      confirmLabel: 'Save'
+    })
+    if (!r) return
+    run(() => api.post('/super/catalogue/chapters', { ...r, id: c.id, moduleId: m.id }), 'Chapter saved.')
+  }
+
   const pasteOutline = async () => {
     const r = await ask({
       title: 'Paste an outline',
@@ -246,6 +261,7 @@ export default function ModuleDetail() {
                       onClick={() => setChapterPublished(c, !c.published)}>
                       {c.published ? 'Unpublish' : 'Release'}
                     </button>
+                    <button className="btn btn-quiet btn-sm" onClick={() => renameChapter(c)}>Rename</button>
                     <button className="btn btn-quiet btn-sm" onClick={() => nav(`/super/chapters/${c.id}`)}>Open</button>
                     <button className="btn btn-danger btn-sm" onClick={() => removeChapter(c)}>Delete</button>
                   </span>
