@@ -68,6 +68,7 @@ const SCREENS = {
   SUPER_ADMIN: [
     ['Overview', '/super', 'dashboard'],
     ['Modules and chapters', '/super/modules', 'catalogue'],
+    ['Content sheet', '/super/content-sheet', 'import'],
     ['Courses and pricing', '/super/courses', 'library'],
     ['Projects', '/super/projects', 'projects'],
     ['Rubrics', '/super/rubrics', 'queues'],

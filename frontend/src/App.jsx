@@ -60,6 +60,7 @@ const Analytics = lazy(() => import('./pages/mentor/Analytics'))
 const Features = lazy(() => import('./pages/superadmin/Features'))
 const Faqs = lazy(() => import('./pages/superadmin/Faqs'))
 const Modules = lazy(() => import('./pages/superadmin/Modules'))
+const ContentSheet = lazy(() => import('./pages/superadmin/ContentSheet'))
 const ModuleDetail = lazy(() => import('./pages/superadmin/ModuleDetail'))
 const ChapterDetail = lazy(() => import('./pages/superadmin/ChapterDetail'))
 const Courses = lazy(() => import('./pages/superadmin/Courses'))
@@ -215,6 +216,7 @@ export default function App() {
       <Route path="/super/resources" element={<Guard roles={['ADMIN', 'SUPER_ADMIN']}><JobsAndCases /></Guard>} />
       <Route path="/super" element={<Guard roles={['SUPER_ADMIN']}><SuperHome /></Guard>} />
       <Route path="/super/modules" element={<Guard roles={['SUPER_ADMIN']}><Modules /></Guard>} />
+      <Route path="/super/content-sheet" element={<Guard roles={['SUPER_ADMIN']}><ContentSheet /></Guard>} />
       <Route path="/super/modules/:id" element={<Guard roles={['SUPER_ADMIN']}><ModuleDetail /></Guard>} />
       {/* a mentor opens this to set and mark the work; the page shows them the
           assignment only, and the server enforces the same split */}

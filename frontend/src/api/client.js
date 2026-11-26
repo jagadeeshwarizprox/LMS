@@ -120,8 +120,13 @@ async function request(method, path, body, isForm = false) {
  * bearer header, so a plain <a href> reaches the API with no credentials and comes
  * back 401. This pulls the bytes, then hands the browser a blob to save.
  */
-export async function downloadFile(id, filename) {
-  const res = await fetch(`${BASE}/files/${id}`, {
+export function downloadFile(id, filename) {
+  return downloadPath(`/files/${id}`, filename)
+}
+
+/** The same, for any endpoint that answers with a file rather than JSON. */
+export async function downloadPath(path, filename) {
+  const res = await fetch(`${BASE}${path}`, {
     headers: { Authorization: `Bearer ${token}`, 'X-Device-Id': deviceId() }
   })
   if (!res.ok) throw new Error('That file could not be downloaded.')

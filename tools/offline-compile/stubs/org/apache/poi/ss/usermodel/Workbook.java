@@ -7,4 +7,7 @@ public interface Workbook extends Closeable, Iterable<Sheet> {
     Sheet createSheet(String name);
     String getSheetName(int index);
     void write(java.io.OutputStream out) throws java.io.IOException;
+    Font createFont();
+    CellStyle createCellStyle();
+    CreationHelper getCreationHelper();
 }

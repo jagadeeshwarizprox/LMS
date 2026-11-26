@@ -12,4 +12,7 @@ public interface Cell {
     int getColumnIndex();
     int getRowIndex();
     Row getRow();
+    Hyperlink getHyperlink();
+    void setCellValue(String value);
+    void setCellStyle(CellStyle style);
 }

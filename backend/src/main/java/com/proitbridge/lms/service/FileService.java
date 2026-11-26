@@ -133,8 +133,27 @@ public class FileService {
         if (upload == null || upload.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No file was attached.");
         }
-        String type = upload.getContentType() == null ? "" : upload.getContentType();
-        String ext = extensionOf(upload.getOriginalFilename());
+        try (var in = upload.getInputStream()) {
+            return store(upload.getOriginalFilename(), upload.getContentType(), upload.getSize(),
+                    in, ownerId, purpose, linkedId);
+        } catch (IOException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "The upload failed.");
+        }
+    }
+
+    /**
+     * The same checks and the same storage for bytes that did not arrive as a browser
+     * upload: a file the content sheet fetched from a link, or a copy of the sheet
+     * itself. One path, so a fetched file can never get past a rule an uploaded one
+     * would have met.
+     */
+    public StoredFile store(String originalName, String contentType, long size, java.io.InputStream data,
+                            String ownerId, String purpose, String linkedId) {
+        if (size <= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "The file is empty.");
+        }
+        String type = contentType == null ? "" : contentType;
+        String ext = extensionOf(originalName);
         if (ext.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE,
                     "That file has no extension, so there is no way to tell what it is.");
@@ -165,7 +184,7 @@ public class FileService {
                     + "sheets, slides, images and archives are.");
         }
         long ceiling = video ? videoMaxBytes : maxBytes;
-        if (upload.getSize() > ceiling) {
+        if (size > ceiling) {
             throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
                     (video ? "That recording is larger than " : "That file is larger than ")
                     + (ceiling / (1024 * 1024)) + " MB, which is the limit for "
@@ -175,16 +194,12 @@ public class FileService {
         /* the key is random and generated here: never the filename, never guessable,
            and never anything a caller can influence */
         String key = UUID.randomUUID().toString().replace("-", "");
-        try (var in = upload.getInputStream()) {
-            storage.put(key, in, upload.getSize(), type);
-        } catch (IOException e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "The upload failed.");
-        }
+        storage.put(key, data, size, type);
 
         StoredFile f = new StoredFile();
-        f.setFilename(cleanName(upload.getOriginalFilename()));
+        f.setFilename(cleanName(originalName));
         f.setContentType(type);
-        f.setSizeBytes(upload.getSize());
+        f.setSizeBytes(size);
         f.setStorageKey(key);
         f.setOwnerId(ownerId);
         f.setPurpose(purpose);

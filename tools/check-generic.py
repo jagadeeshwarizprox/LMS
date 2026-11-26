@@ -26,6 +26,9 @@ EXEMPT = {
     # the same list, per kind, on the client: which file types each Notes / Code /
     # Dataset / Slides button accepts. Extensions, not copy.
     'ResourceList.jsx',
+    # the content sheet template's own header and its code runner values, which are
+    # the column's data contract; matching them is parsing, not copy
+    'ContentSheetParser.java',
 }
 
 

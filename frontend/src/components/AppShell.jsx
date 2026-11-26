@@ -147,6 +147,7 @@ const NAV = {
     ]],
     ['Teaching', [
       ['/super/modules', 'Modules and chapters', 'catalogue'],
+      ['/super/content-sheet', 'Content sheet', 'import'],
       ['/super/courses', 'Courses and pricing', 'library'],
       ['/super/projects', 'Projects', 'projects'],
       ['/super/rubrics', 'Rubrics', 'queues'],

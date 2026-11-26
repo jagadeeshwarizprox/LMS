@@ -6,4 +6,6 @@ public interface Sheet extends Iterable<Row> {
     int getFirstRowNum();
     int getPhysicalNumberOfRows();
     String getSheetName();
+    void setColumnWidth(int column, int width);
+    void createFreezePane(int colSplit, int rowSplit);
 }

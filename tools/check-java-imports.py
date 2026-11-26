@@ -16,7 +16,8 @@ BUILTIN = {
     'Deprecated','SuppressWarnings','Character','Byte','Short','Float','Number','Thread',
     'Iterable','Comparable','Runnable','Class','Void','StringBuilder','Record','Enum',
     'FunctionalInterface','SafeVarargs','NumberFormatException','ClassCastException',
-    'NullPointerException','UnsupportedOperationException','Throwable','Error','Process'
+    'NullPointerException','UnsupportedOperationException','Throwable','Error','Process',
+    'InterruptedException'
 }
 
 def strip(src):

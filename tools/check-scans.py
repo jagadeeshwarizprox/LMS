@@ -41,6 +41,7 @@ ALLOW = {
     'SessionScheduleRepository', # recurring schedules
     'MentorCoverRepository',     # cover arrangements between mentors
     'VideoRepository',           # the video library
+    'ContentSheetRowRepository', # one per row of the content sheet: catalogue sized
 }
 # Document classes MongoTemplate.findAll may read whole, matching the list above.
 ALLOW_DOCS = {

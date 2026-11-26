@@ -37,6 +37,9 @@ for f in front.rglob('*.js*'):
     for verb, path in re.findall(r'api\.(get|post|del|put|upload)\(\s*[`\'"]([^`\'"]+)', src):
         v = {'get': 'GET', 'post': 'POST', 'del': 'DELETE', 'put': 'PUT', 'upload': 'POST'}[verb]
         calls.setdefault((v, norm('/api' + path)), set()).add(f.name)
+    # a file from any endpoint, through the client's downloadPath helper
+    for path in re.findall(r'downloadPath\(\s*[`\'"]([^`\'"]+)', src):
+        calls.setdefault(('GET', norm('/api' + path)), set()).add(f.name)
     # downloads and uploads that go through fetch rather than the client
     for path in re.findall(r'\$\{BASE\}(/[\w/${}-]+)', src):
         calls.setdefault(('GET', norm('/api' + path)), set()).add(f.name)

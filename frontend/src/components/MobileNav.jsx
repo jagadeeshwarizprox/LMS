@@ -73,6 +73,7 @@ const MORE = {
     ['/admin/mail', 'Credential mail log', 'mail']
   ],
   SUPER_ADMIN: [
+    ['/super/content-sheet', 'Content sheet', 'import'],
     ['/super/courses', 'Courses and pricing', 'library'],
     ['/super/projects', 'Projects', 'projects'],
     ['/super/rubrics', 'Rubrics', 'queues'],
